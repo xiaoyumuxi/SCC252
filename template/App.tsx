@@ -12,17 +12,20 @@ const App: React.FC = () => {
     const [result, setResult] = useState<PredictionResult | null>(null);
     const [loading, setLoading] = useState<boolean>(false);
     const [alerts, setAlerts] = useState<AlertLog[]>([]);
+    const [history, setHistory] = useState<AlertLog[]>([]);
     const [metrics, setMetrics] = useState<PerformanceMetrics | null>(null);
     const [retraining, setRetraining] = useState<boolean>(false);
     const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
     const [uploading, setUploading] = useState<boolean>(false);
     const [editingIndex, setEditingIndex] = useState<number | null>(null);
     const [editValue, setEditValue] = useState<string>('');
+    const [activeTab, setActiveTab] = useState<'alerts' | 'history'>('alerts');
 
     // Initial Data Load
     useEffect(() => {
         fetchSampleData();
         fetchAlerts();
+        fetchHistory();
         fetchMetrics();
         // Set up polling for alerts every 5 seconds
         const interval = setInterval(fetchAlerts, 5000);
@@ -54,6 +57,20 @@ const App: React.FC = () => {
         }
     };
 
+    const fetchAttackData = async () => {
+        try {
+            const res = await fetch(`${API_URL}/simulate-attack`);
+            const data = await res.json();
+            setFeatures(data.features);
+            setFeatureNames(data.feature_names);
+        } catch (error) {
+            console.error("Error fetching attack simulation data:", error);
+            // Fallback to generating client-side attack-like data
+            const newFeatures = features.map((_, i) => i % 3 === 0 ? Math.random() * 100000 : Math.random() * 1000);
+            setFeatures(newFeatures);
+        }
+    };
+
     const fetchAlerts = async () => {
         try {
             const res = await fetch(`${API_URL}/alerts`);
@@ -61,6 +78,16 @@ const App: React.FC = () => {
             setAlerts(data);
         } catch (error) {
             console.error("Error fetching alerts:", error);
+        }
+    };
+
+    const fetchHistory = async () => {
+        try {
+            const res = await fetch(`${API_URL}/history`);
+            const data = await res.json();
+            setHistory(data);
+        } catch (error) {
+            console.error("Error fetching history:", error);
         }
     };
 
@@ -84,10 +111,9 @@ const App: React.FC = () => {
             });
             const data = await res.json();
             setResult(data);
-            // Refresh alerts immediately if a threat was found
-            if (data.threat_level !== 'None') {
-                fetchAlerts();
-            }
+            // Refresh alerts and history immediately
+            fetchAlerts();
+            fetchHistory();
         } catch (error) {
             console.error("Prediction error:", error);
         } finally {
@@ -275,7 +301,13 @@ const App: React.FC = () => {
                                     onClick={fetchRandomData}
                                     className="text-sm text-indigo-600 hover:text-indigo-800 font-medium"
                                 >
-                                    🎲 Generate Random Data
+                                    🎲 Random Data
+                                </button>
+                                <button 
+                                    onClick={fetchAttackData}
+                                    className="text-sm text-red-600 hover:text-red-800 font-medium"
+                                >
+                                    ⚔️ Simulate Attack
                                 </button>
                             </div>
                         </div>
@@ -385,32 +417,75 @@ const App: React.FC = () => {
                     </div>
                 </div>
 
-                {/* Right Column: Alert Logs */}
+                {/* Right Column: Alert Logs and History */}
                 <div className="lg:col-span-4 space-y-8">
                     <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 h-full max-h-[800px] flex flex-col">
                         <div className="flex items-center justify-between mb-6">
-                            <h2 className="text-xl font-bold text-slate-800">Threat Intelligence Log</h2>
+                            <h2 className="text-xl font-bold text-slate-800">Threat Intelligence</h2>
                             <span className="text-xs bg-red-100 text-red-600 px-2 py-1 rounded-full font-bold animate-pulse">LIVE</span>
                         </div>
 
+                        {/* Tabs for Alerts and History */}
+                        <div className="flex border-b border-slate-200 mb-4">
+                            <button
+                                className={`py-2 px-4 font-medium text-sm ${activeTab === 'alerts' ? 'border-b-2 border-indigo-500 text-indigo-600' : 'text-slate-500'}`}
+                                onClick={() => setActiveTab('alerts')}
+                            >
+                                Recent Alerts
+                            </button>
+                            <button
+                                className={`py-2 px-4 font-medium text-sm ${activeTab === 'history' ? 'border-b-2 border-indigo-500 text-indigo-600' : 'text-slate-500'}`}
+                                onClick={() => setActiveTab('history')}
+                            >
+                                Detection History
+                            </button>
+                        </div>
+
                         <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
-                            {alerts.length === 0 ? (
-                                <div className="text-center text-slate-400 py-10">
-                                    <p>No threats detected yet.</p>
-                                </div>
-                            ) : (
-                                alerts.map((alert, idx) => (
-                                    <div key={idx} className="p-4 rounded-lg bg-slate-50 border border-slate-100 hover:bg-slate-100 transition-colors">
-                                        <div className="flex justify-between items-start mb-2">
-                                            <span className={`px-2 py-0.5 rounded text-xs font-bold border ${getLevelColor(alert.level)}`}>
-                                                {alert.level} PRIORITY
-                                            </span>
-                                            <span className="text-xs text-slate-400">{alert.timestamp.split(' ')[1]}</span>
+                            {activeTab === 'alerts' ? (
+                                <>
+                                    <h3 className="text-md font-bold text-slate-700">Recent Alerts (Live)</h3>
+                                    {alerts.length === 0 ? (
+                                        <div className="text-center text-slate-400 py-10">
+                                            <p>No threats detected yet.</p>
                                         </div>
-                                        <p className="font-bold text-slate-800">{alert.type}</p>
-                                        <p className="text-xs text-slate-500 mt-1">Confidence Score: {(alert.confidence * 100).toFixed(1)}%</p>
-                                    </div>
-                                ))
+                                    ) : (
+                                        alerts.map((alert, idx) => (
+                                            <div key={idx} className="p-4 rounded-lg bg-slate-50 border border-slate-100 hover:bg-slate-100 transition-colors">
+                                                <div className="flex justify-between items-start mb-2">
+                                                    <span className={`px-2 py-0.5 rounded text-xs font-bold border ${getLevelColor(alert.level)}`}>
+                                                        {alert.level} PRIORITY
+                                                    </span>
+                                                    <span className="text-xs text-slate-400">{alert.timestamp.split(' ')[1]}</span>
+                                                </div>
+                                                <p className="font-bold text-slate-800">{alert.type}</p>
+                                                <p className="text-xs text-slate-500 mt-1">Confidence Score: {(alert.confidence * 100).toFixed(1)}%</p>
+                                            </div>
+                                        ))
+                                    )}
+                                </>
+                            ) : (
+                                <>
+                                    <h3 className="text-md font-bold text-slate-700">Detection History</h3>
+                                    {history.length === 0 ? (
+                                        <div className="text-center text-slate-400 py-10">
+                                            <p>No detection history available.</p>
+                                        </div>
+                                    ) : (
+                                        history.map((record, idx) => (
+                                            <div key={idx} className="p-4 rounded-lg bg-slate-50 border border-slate-100 hover:bg-slate-100 transition-colors">
+                                                <div className="flex justify-between items-start mb-2">
+                                                    <span className={`px-2 py-0.5 rounded text-xs font-bold border ${getLevelColor(record.level)}`}>
+                                                        {record.level !== 'None' ? record.level + ' PRIORITY' : 'NORMAL'}
+                                                    </span>
+                                                    <span className="text-xs text-slate-400">{record.timestamp.split(' ')[1]}</span>
+                                                </div>
+                                                <p className="font-bold text-slate-800">{record.type}</p>
+                                                <p className="text-xs text-slate-500 mt-1">Confidence Score: {(record.confidence * 100).toFixed(1)}%</p>
+                                            </div>
+                                        ))
+                                    )}
+                                </>
                             )}
                         </div>
                     </div>
