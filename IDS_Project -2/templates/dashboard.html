@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CyberDefense IDS Shield</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <style>
+        /* --- 明亮专业风格 CSS --- */
+        body { 
+            background-color: #f4f6f9; /* 浅灰背景，护眼 */
+            color: #333333;            /* 深灰文字，清晰 */
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; 
+        }
+        
+        /* 卡片样式：纯白底色 + 柔和阴影 */
+        .cyber-card {
+            background: #ffffff;
+            border: 1px solid #e0e0e0; /* 浅灰边框 */
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05); /* 淡淡的投影 */
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            transition: all 0.3s ease;
+        }
+        .cyber-card:hover { 
+            box-shadow: 0 8px 15px rgba(0, 0, 0, 0.1); 
+            transform: translateY(-2px); /* 悬浮效果 */
+        }
+
+        /* 标题文字样式 (原霓虹特效改为深蓝加粗) */
+        .text-neon { 
+            color: #0d6efd; /* Bootstrap Primary Blue */
+            font-weight: 700;
+            text-shadow: none; /* 去掉发光，保证清晰 */
+        }
+        
+        /* 扫描按钮 (改为实心或深色边框) */
+        .btn-scan {
+            background: #ffffff;
+            border: 1px solid #0d6efd;
+            color: #0d6efd;
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 10px;
+            transition: 0.3s;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 600;
+        }
+        .btn-scan:hover { 
+            background: #0d6efd; 
+            color: #ffffff; 
+            box-shadow: 0 4px 8px rgba(13, 110, 253, 0.3); 
+        }
+        
+        /* 日志框 (改为浅灰底黑字) */
+        .log-box {
+            height: 300px;
+            overflow-y: auto;
+            background: #f8f9fa; /* 极浅灰 */
+            border: 1px solid #dee2e6;
+            color: #212529; /* 纯黑字 */
+            font-family: 'Consolas', monospace;
+            padding: 15px;
+            font-size: 0.85rem;
+        }
+        
+        /* 滚动条美化 (适配浅色) */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #e9ecef; }
+        ::-webkit-scrollbar-thumb { background: #adb5bd; border-radius: 4px; }
+        
+        /* 辅助类：强行覆盖 Bootstrap 的白色文字 */
+        .text-white { color: #212529 !important; }
+        .text-light { color: #6c757d !important; }
+        .border-secondary { border-color: #dee2e6 !important; }
+        .bg-dark { background-color: #ffffff !important; color: #000 !important; border: 1px solid #ced4da !important; }
+    </style>
+</head>
+<body>
+
+<div class="container-fluid p-4">
+    <div class="d-flex justify-content-between align-items-center mb-4 border-bottom border-secondary pb-3">
+        <div>
+            <h2 class="text-neon mb-0"><i class="fas fa-shield-virus"></i> DDoS Defense Shield</h2>
+            <small class="text-muted">Real-time Network Traffic Analysis & Threat Intelligence</small>
+        </div>
+        <span class="badge bg-success bg-opacity-10 text-success border border-success p-2">
+            System Active <i class="fas fa-satellite-dish fa-spin ms-1"></i>
+        </span>
+    </div>
+
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="cyber-card text-center py-3">
+                <h6 class="text-muted text-uppercase fw-bold">Accuracy</h6>
+                <div class="h2 text-success fw-bold" id="acc-display">Loading...</div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="cyber-card text-center py-3">
+                <h6 class="text-muted text-uppercase fw-bold">Precision</h6>
+                <div class="h2 text-primary fw-bold" id="prec-display">Loading...</div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="cyber-card text-center py-3">
+                <h6 class="text-muted text-uppercase fw-bold">Recall</h6>
+                <div class="h2 text-warning fw-bold" id="recall-display">Loading...</div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="cyber-card text-center py-3">
+                <h6 class="text-muted text-uppercase fw-bold">F1 Score</h6>
+                <div class="h2 text-dark fw-bold" id="f1-display">Loading...</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-md-3">
+            <div class="cyber-card h-100">
+                <h5 class="text-dark border-bottom border-secondary pb-2 mb-3 fw-bold">
+                    <i class="fas fa-network-wired text-primary"></i> Traffic Simulator
+                </h5>
+                <p class="text-muted small">Inject simulated packets to test IDS response.</p>
+                
+                <button class="btn btn-scan" onclick="simulateTraffic('normal')">
+                    <i class="fas fa-check-circle me-2"></i> Normal Traffic
+                </button>
+                <button class="btn btn-scan text-warning border-warning" onclick="simulateTraffic('portscan')">
+                    <i class="fas fa-search-location me-2"></i> PortScan Test
+                </button>
+                <button class="btn btn-scan text-danger border-danger" onclick="simulateTraffic('attack')">
+                    <i class="fas fa-biohazard me-2"></i> DDoS Attack
+                </button>
+                
+                <div id="scanStatus" class="mt-3 text-center text-primary fw-bold" style="display:none;">
+                    <div class="spinner-border spinner-border-sm me-1"></div> Analyzing Features...
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-6">
+            <div class="cyber-card mb-3" id="resultCard">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="text-muted small">Last Detection Result:</h6>
+                        <h3 id="resultType" class="text-dark mb-0 fw-bold">Waiting for input...</h3>
+                    </div>
+                    <span id="resultSeverity" class="badge bg-secondary">Status: Idle</span>
+                </div>
+            </div>
+
+            <div class="cyber-card">
+                <h5 class="text-dark border-bottom border-secondary pb-2 mb-2 fw-bold">
+                    <i class="fas fa-terminal text-primary"></i> Live Threat Logs
+                </h5>
+                <div id="logConsole" class="log-box">
+                    <div class="text-success">[SYSTEM] IDS initialized successfully...</div>
+                    <div class="text-muted">[SYSTEM] Connected to RF Model (78 features)...</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-3">
+            <div class="cyber-card">
+                <h5 class="text-dark border-bottom border-secondary pb-2 mb-3 fw-bold">
+                    <i class="fas fa-sync text-primary"></i> Model Retraining
+                </h5>
+                <div class="mb-3">
+                    <label class="form-label text-muted small fw-bold">Upload CSV Dataset:</label>
+                    <input type="file" class="form-control bg-dark text-light border-secondary form-control-sm">
+                </div>
+                <button class="btn btn-outline-primary w-100 btn-sm" onclick="uploadAndRetrain()">
+                    <i class="fas fa-upload me-2"></i> Upload & Retrain
+                </button>
+            </div>
+
+            <div class="cyber-card">
+                <h6 class="text-muted text-center small fw-bold mb-3">MODEL PERFORMANCE</h6>
+                <canvas id="perfChart"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+<script src="{{ url_for('static', filename='js/script.js') }}"></script>
+
+<script>
+    // 图表颜色配置调整，以适应白色背景
+    const ctx = document.getElementById('perfChart').getContext('2d');
+    window.perfChart = new Chart(ctx, {
+        type: 'radar',
+        data: {
+            labels: ['Accuracy', 'Precision', 'Recall', 'F1', 'AUC'],
+            datasets: [{
+                label: 'Current Model',
+                data: [90, 90, 90, 90, 90], // 默认值
+                // 改为深蓝色半透明填充
+                backgroundColor: 'rgba(13, 110, 253, 0.2)',
+                borderColor: '#0d6efd',
+                pointBackgroundColor: '#fff',
+                pointBorderColor: '#0d6efd'
+            }]
+        },
+        options: {
+            scales: {
+                r: {
+                    // 网格线改为浅灰色
+                    angleLines: { color: 'rgba(0, 0, 0, 0.1)' },
+                    grid: { color: 'rgba(0, 0, 0, 0.05)' },
+                    // 标签改为深灰色
+                    pointLabels: { 
+                        color: '#666',
+                        font: { size: 11 }
+                    },
+                    suggestedMin: 0,
+                    suggestedMax: 1
+                }
+            },
+            plugins: { legend: { display: false } }
+        }
+    });
+</script>
+
+</body>
+</html>

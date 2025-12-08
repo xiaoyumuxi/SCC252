@@ -1,0 +1,53 @@
+/* 自定义页面背景：深灰色，护眼且专业 */
+body.bg-dark {
+    background-color: #f0f2f5 !important; /* 实际上我们用淡灰色，更像现代Dashboard */
+}
+
+/* 导航栏样式增强 */
+.navbar {
+    background: linear-gradient(90deg, #0d6efd 0%, #0a58ca 100%);
+}
+
+/* 卡片样式优化：添加一点悬浮效果 */
+.card {
+    border-radius: 10px;
+    transition: transform 0.2s;
+}
+
+/* 让列表项更紧凑美观 */
+.list-group-item {
+    font-family: 'Courier New', Courier, monospace; /* 使用等宽字体显示参数，更像代码 */
+    font-size: 0.9rem;
+    display: flex;
+    justify-content: space-between;
+}
+
+/* 表格样式 */
+.table thead th {
+    border-top: none;
+    font-weight: 600;
+    color: #555;
+}
+
+/* 警报严重程度的标签样式 */
+.severity-high {
+    background-color: #dc3545; /* 红色 */
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.85rem;
+}
+.severity-medium {
+    background-color: #fd7e14; /* 橙色 */
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.85rem;
+}
+.severity-low {
+    background-color: #0dcaf0; /* 蓝色 */
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.85rem;
+}
