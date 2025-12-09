@@ -3,7 +3,7 @@ import numpy as np
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 
 # 文件路径
-file_path = "Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv"
+file_path = "data/Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv"
 
 try:
     # 使用 low_memory=False 更好地推断数据类型，防止后续类型错误

@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import joblib
+import os
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler, LabelEncoder
@@ -9,9 +10,11 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 # ----------------------------------------------------------------------
 # 设定参数
 # ----------------------------------------------------------------------
-FILE_PATH = "Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv"
+FILE_PATH = "data/Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv"
 TARGET_COLUMN = 'Label'
 
+MODEL_DIR = "models"
+os.makedirs(MODEL_DIR, exist_ok=True)
 # ----------------------------------------------------------------------
 # 1. 数据加载与清洗 (与您之前确认的清洗逻辑一致)
 # ----------------------------------------------------------------------
@@ -24,12 +27,22 @@ numeric_cols = df.select_dtypes(include=np.number).columns
 
 # 处理缺失值 (NaN)
 for col in numeric_cols:
-    df[col].fillna(df[col].median(), inplace=True)
+    median_val = df[col].median()
+    df.loc[:, col] = df[col].fillna(median_val)
 
 # 处理无穷值 (Infinity)
 for col in numeric_cols:
-    df[col].replace([np.inf], df[col][np.isfinite(df[col])].max(), inplace=True)
-    df[col].replace([-np.inf], df[col][np.isfinite(df[col])].min(), inplace=True)
+    finite_mask = np.isfinite(df[col])
+    if finite_mask.any():
+        max_finite = df.loc[finite_mask, col].max()
+        min_finite = df.loc[finite_mask, col].min()
+    else:
+        max_finite = 0
+        min_finite = 0
+
+    # 替换无穷值
+    df.loc[df[col] == np.inf, col] = max_finite
+    df.loc[df[col] == -np.inf, col] = min_finite
 
 # ----------------------------------------------------------------------
 # 2. 标签编码 (Label Encoding)
@@ -84,9 +97,9 @@ print(f"  F1 Score: {f1:.4f}")
 print("--- 模型训练完成 ---")
 
 # **保存所有必要的组件**
-joblib.dump(rf_model, 'ddos_rf_model.joblib')
-joblib.dump(scaler, 'ddos_scaler.joblib')
-joblib.dump(le, 'ddos_label_encoder.joblib')
-joblib.dump(FEATURE_COLUMNS, 'ddos_feature_columns.joblib') # 必须保存特征顺序
+joblib.dump(rf_model, f'{MODEL_DIR}/ddos_rf_model.joblib')
+joblib.dump(scaler, f'{MODEL_DIR}/ddos_scaler.joblib')
+joblib.dump(le, f'{MODEL_DIR}/ddos_label_encoder.joblib')
+joblib.dump(FEATURE_COLUMNS, f'{MODEL_DIR}/ddos_feature_columns.joblib')
 
 print("\n✅ 所有组件已保存，可以运行预测脚本了。")
