@@ -28,7 +28,7 @@ CORS(app)  # 为所有路由启用CORS
 
 # 模型配置
 MODEL_DIR = "models"
-DATABASE_PATH = "models/ddos_detection.db"
+DATABASE_PATH = "ddos_detection.db"
 MAX_ALERTS = 50
 MAX_HISTORY = 100
 UPLOAD_FOLDER = "uploads"
@@ -67,7 +67,7 @@ PERFORMANCE_METRICS = {
 
 class Config:
     MODEL_DIR = "models"
-    DATABASE_PATH = "models/ddos_detection.db"
+    DATABASE_PATH = "ddos_detection.db"
     MAX_ALERTS = 50
     MAX_HISTORY = 100
     UPLOAD_FOLDER = "uploads"
@@ -99,7 +99,7 @@ config.ensure_directories()
 
 # Initialize database
 def init_db():
-    conn = sqlite3.connect('models/ddos_detection.db')
+    conn = sqlite3.connect('ddos_detection.db')
     c = conn.cursor()
     # 检测历史表
     c.execute('''CREATE TABLE IF NOT EXISTS detection_history
@@ -521,7 +521,7 @@ def predict_api():
         # If prediction successful and it's not benign, add to alerts and database
         if result['status'] == 'success':
             # Store in database
-            conn = sqlite3.connect('models/ddos_detection.db')
+            conn = sqlite3.connect('ddos_detection.db')
             c = conn.cursor()
             c.execute("INSERT INTO detection_history (timestamp, predicted_label, confidence, threat_level) VALUES (?, ?, ?, ?)",
                       (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), result['predicted_label'], result['confidence'], result['threat_level']))
@@ -565,7 +565,7 @@ def get_history():
     Get full detection history
     """
     try:
-        conn = sqlite3.connect('models/ddos_detection.db')
+        conn = sqlite3.connect('ddos_detection.db')
         c = conn.cursor()
         c.execute("SELECT timestamp, predicted_label, confidence, threat_level FROM detection_history ORDER BY timestamp DESC LIMIT 100")
         rows = c.fetchall()
