@@ -69,7 +69,7 @@ def load_model_components():
         MODEL = joblib.load('./models/ids_decision_tree_model.joblib')
         SCALER = joblib.load('./models/ids_standard_scaler.joblib')
         LE = joblib.load('./models/ids_label_encoder.joblib')
-        FEATURE_COLUMNS = joblib.load('ddos_feature_columns.joblib')
+        FEATURE_COLUMNS = joblib.load('./models/ddos_feature_columns.joblib')
         logger.info("Model components loaded successfully.")
         return True
     except FileNotFoundError as e:
@@ -143,10 +143,10 @@ def train_model_with_data(df, target_column='Label'):
     # 更新评估指标，上面的 AUC 只是占位符，实际应用中应计算真实值。
     
     # Save all components
-    joblib.dump(rf_model, 'ddos_rf_model.joblib')
-    joblib.dump(scaler, 'ddos_scaler.joblib')
-    joblib.dump(le, 'ddos_label_encoder.joblib')
-    joblib.dump(feature_columns, 'ddos_feature_columns.joblib')
+    joblib.dump(rf_model, './models/ddos_rf_model.joblib')
+    joblib.dump(scaler, './models/ddos_scaler.joblib')
+    joblib.dump(le, './models/ddos_label_encoder.joblib')
+    joblib.dump(feature_columns, './models/ddos_feature_columns.joblib')
     
     return True
 

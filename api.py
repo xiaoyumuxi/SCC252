@@ -7,10 +7,10 @@ import joblib
 # ----------------------------------------------------------------------
 try:
     # 加载模型、缩放器、标签编码器和特征顺序
-    MODEL = joblib.load('ddos_rf_model.joblib')
-    SCALER = joblib.load('ddos_scaler.joblib')
-    LE = joblib.load('ddos_label_encoder.joblib')
-    FEATURE_COLUMNS = joblib.load('ddos_feature_columns.joblib')
+    MODEL = joblib.load('./models/ddos_rf_model.joblib')
+    SCALER = joblib.load('./models/ddos_scaler.joblib')
+    LE = joblib.load('./models/ddos_label_encoder.joblib')
+    FEATURE_COLUMNS = joblib.load('./models/ddos_feature_columns.joblib')
     print("模型组件加载成功，准备就绪。")
 except FileNotFoundError:
     print("错误：无法加载模型文件。请确保已运行 'trainning.py' 脚本。")
