@@ -1,9 +1,7 @@
 import os
-import json
 import logging
 from datetime import datetime
 from threading import Lock
-from tempfile import TemporaryDirectory
 import pandas as pd
 import numpy as np
 import joblib
@@ -21,42 +19,37 @@ logger = logging.getLogger(__name__)
 
 # Create Flask app
 app = Flask(__name__)
+CORS(app)  # Enable CORS for all routes
 
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
-app.config['UPLOAD_FOLDER'] = 'uploads'
-CORS(app)  # 为所有路由启用CORS
+# Configure file upload
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max file size
 
-# 模型配置
-MODEL_DIR = "models"
-DATABASE_PATH = "ddos_detection.db"
-MAX_ALERTS = 50
-MAX_HISTORY = 100
-UPLOAD_FOLDER = "uploads"
-ALLOWED_EXTENSIONS = {'csv'}
-
-MODEL_PATHS = {
-    'rf_model': f'{MODEL_DIR}/ddos_rf_model.joblib',
-    'scaler': f'{MODEL_DIR}/ddos_scaler.joblib',
-    'label_encoder': f'{MODEL_DIR}/ddos_label_encoder.joblib',
-    'feature_columns': f'{MODEL_DIR}/ddos_feature_columns.joblib',
-    'metadata': f'{MODEL_DIR}/model_metadata.joblib'
-}
-
-os.makedirs(MODEL_DIR, exist_ok=True)
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-MODEL_VERSION = None
-MODEL_TRAINED_AT = None
+# Global variables for model components
 MODEL = None
 SCALER = None
 LE = None
 FEATURE_COLUMNS = None
 
-# 内存中的警报存储
+# Initialize database
+def init_db():
+    conn = sqlite3.connect('ddos_detection.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS detection_history
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  timestamp TEXT NOT NULL,
+                  predicted_label TEXT NOT NULL,
+                  confidence REAL NOT NULL,
+                  threat_level TEXT NOT NULL)''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# In-memory storage for alerts and performance metrics
 alerts = []
 alerts_lock = Lock()
 
-# 性能指标
+# Sample performance metrics (in a real app, these would be calculated from test data)
 PERFORMANCE_METRICS = {
     "accuracy": 0.98,
     "precision": 0.97,
@@ -64,106 +57,23 @@ PERFORMANCE_METRICS = {
     "f1_score": 0.96,
     "auc": 0.99
 }
-
-class Config:
-    MODEL_DIR = "models"
-    DATABASE_PATH = "ddos_detection.db"
-    MAX_ALERTS = 50
-    MAX_HISTORY = 100
-    UPLOAD_FOLDER = "uploads"
-    MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 100MB
-    ALLOWED_EXTENSIONS = {'csv'}
-
-    # 模型文件路径
-    @property
-    def MODEL_PATHS(self):
-        return {
-            'rf_model': f'{self.MODEL_DIR}/ddos_rf_model.joblib',
-            'scaler': f'{self.MODEL_DIR}/ddos_scaler.joblib',
-            'label_encoder': f'{self.MODEL_DIR}/ddos_label_encoder.joblib',
-            'feature_columns': f'{self.MODEL_DIR}/ddos_feature_columns.joblib',
-            'metadata': f'{self.MODEL_DIR}/model_metadata.joblib'
-        }
-
-    def ensure_directories(self):
-        """确保所有必要的目录都存在"""
-        directories = [self.MODEL_DIR, self.UPLOAD_FOLDER]
-        for directory in directories:
-            os.makedirs(directory, exist_ok=True)
-
-
-# 初始化配置
-config = Config()
-config.ensure_directories()
-
-
-# Initialize database
-def init_db():
-    conn = sqlite3.connect('ddos_detection.db')
-    c = conn.cursor()
-    # 检测历史表
-    c.execute('''CREATE TABLE IF NOT EXISTS detection_history
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      timestamp TEXT NOT NULL,
-                      predicted_label TEXT NOT NULL,
-                      confidence REAL NOT NULL,
-                      threat_level TEXT NOT NULL,
-                      features_count INTEGER,
-                      is_malicious BOOLEAN)''')
-
-    # 模型训练历史表
-    c.execute('''CREATE TABLE IF NOT EXISTS training_history
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      timestamp TEXT NOT NULL,
-                      accuracy REAL,
-                      precision REAL,
-                      recall REAL,
-                      f1_score REAL,
-                      num_samples INTEGER,
-                      num_features INTEGER)''')
-
-    # 文件上传记录表
-    c.execute('''CREATE TABLE IF NOT EXISTS upload_history
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      timestamp TEXT NOT NULL,
-                      filename TEXT NOT NULL,
-                      rows_uploaded INTEGER,
-                      training_result TEXT)''')
-
-    conn.commit()
-    conn.close()
-
-
-init_db()
-
-
+# Todo: Sample performance metrics above, should be updated after model training/retraining.
 
 def load_model_components():
     """
     Load all saved model components
     """
-    global MODEL, SCALER, LE, FEATURE_COLUMNS, MODEL_VERSION, MODEL_TRAINED_AT
-
+    global MODEL, SCALER, LE, FEATURE_COLUMNS
+    
     try:
-        MODEL = joblib.load(MODEL_PATHS['rf_model'])
-        SCALER = joblib.load(MODEL_PATHS['scaler'])
-        LE = joblib.load(MODEL_PATHS['label_encoder'])
-        FEATURE_COLUMNS = joblib.load(MODEL_PATHS['feature_columns'])
-        # 加载元数据
-        if os.path.exists(MODEL_PATHS['metadata']):
-            metadata = joblib.load(MODEL_PATHS['metadata'])
-            MODEL_VERSION = metadata.get('train_timestamp', 'unknown')
-            MODEL_TRAINED_AT = metadata.get('train_timestamp', 'unknown')
-
-
-
-
-        logger.info(f"Model components loaded successfully from {MODEL_DIR}/")
-        logger.info(f"Model version: {MODEL_VERSION}")
+        MODEL = joblib.load('ddos_rf_model.joblib')
+        SCALER = joblib.load('ddos_scaler.joblib')
+        LE = joblib.load('ddos_label_encoder.joblib')
+        FEATURE_COLUMNS = joblib.load('ddos_feature_columns.joblib')
+        logger.info("Model components loaded successfully.")
         return True
     except FileNotFoundError as e:
         logger.error(f"Error loading model files: {e}")
-        os.makedirs(MODEL_DIR, exist_ok=True)
         return False
 
 def train_model_with_data(df, target_column='Label'):
@@ -171,10 +81,7 @@ def train_model_with_data(df, target_column='Label'):
     Train a new model with the provided dataframe
     """
     global PERFORMANCE_METRICS
-
-    # 确保模型目录存在
-    os.makedirs(MODEL_DIR, exist_ok=True)
-
+    
     # Data cleaning (same as in training script)
     df.columns = df.columns.str.strip().str.replace(' ', '_')
     
@@ -183,23 +90,15 @@ def train_model_with_data(df, target_column='Label'):
     
     # Handle missing values (NaN)
     for col in numeric_cols:
-        median_val = df[col].median()
-        df[col] = df[col].fillna(median_val)
+        df[col].fillna(df[col].median(), inplace=True)
     
     # Handle infinite values (Infinity)
     for col in numeric_cols:
-        finite_mask = np.isfinite(df[col])
-        if finite_mask.any():
-            max_finite = df.loc[finite_mask, col].max()
-            min_finite = df.loc[finite_mask, col].min()
-        else:
-            max_finite = 0
-            min_finite = 0
-            # 替换无穷值
-        df.loc[df[col] == np.inf, col] = max_finite
-        df.loc[df[col] == -np.inf, col] = min_finite
+        df[col].replace([np.inf], df[col][np.isfinite(df[col])].max(), inplace=True)
+        df[col].replace([-np.inf], df[col][np.isfinite(df[col])].min(), inplace=True)
     
     # Label encoding
+    # 个人感觉这一部分打标签是有问题的，因为可能出现新的标签
     le = LabelEncoder()
     df[target_column + '_Encoded'] = le.fit_transform(df[target_column].astype(str))
     
@@ -241,27 +140,18 @@ def train_model_with_data(df, target_column='Label'):
         "f1_score": f1,
         "auc": 0.99  # Placeholder
     }
+    # 更新评估指标，上面的 AUC 只是占位符，实际应用中应计算真实值。
     
     # Save all components
-    joblib.dump(rf_model, MODEL_PATHS['rf_model'])
-    joblib.dump(scaler, MODEL_PATHS['scaler'])
-    joblib.dump(le, MODEL_PATHS['label_encoder'])
-    joblib.dump(feature_columns, MODEL_PATHS['feature_columns'])
-
-    # 保存元数据
-    model_metadata = {
-        'accuracy': accuracy,
-        'precision': precision,
-        'recall': recall,
-        'f1_score': f1,
-        'train_timestamp': datetime.now().isoformat(),
-        'num_samples': len(df),
-        'num_features': len(feature_columns)
-    }
-    joblib.dump(model_metadata, MODEL_PATHS['metadata'])
-
+    joblib.dump(rf_model, 'ddos_rf_model.joblib')
+    joblib.dump(scaler, 'ddos_scaler.joblib')
+    joblib.dump(le, 'ddos_label_encoder.joblib')
+    joblib.dump(feature_columns, 'ddos_feature_columns.joblib')
+    
     return True
 
+# 这个函数仅仅判断了BENIGN标签的内容，没有考虑其他标签的威胁等级划分逻辑
+# todo: 可以根据实际需求调整威胁等级划分逻辑
 def get_threat_level(label, confidence):
     """
     Determine threat level based on label and confidence
@@ -307,6 +197,7 @@ def predict(raw_input_data):
 
     # 5. Inverse map labels
     prediction_label = LE.inverse_transform([prediction_encoded])[0]
+    # 这个标签这里需要注意！！！
 
     # Find highest probability
     max_proba = np.max(prediction_proba)
@@ -325,106 +216,30 @@ def predict(raw_input_data):
 
 # API Routes
 
-@app.route('/api/retrain', methods=['POST'])
-def retrain_model():
+# 实例标签，自动显示
+@app.route('/api/sample', methods=['GET'])
+def get_sample_data():
     """
-    Retrain the model
+    Return sample data for testing
     """
-    try:
-        # 检查训练脚本是否存在
-        if not os.path.exists("training.py"):
-            return jsonify({
-                "status": "error",
-                "message": "Training script not found."
-            }), 404
+    # This is the same sample data from your api.py file
+    sample_features = [
+        54865, 3, 2, 0, 12, 0, 6, 6, 6.0, 0.0, 0, 0, 0.0, 0.0, 4000000.0,
+        666666.6667, 3.0, 0.0, 3, 3, 3, 3.0, 0.0, 3, 3, 0, 0.0, 0.0, 0, 0,
+        0, 0, 0, 0, 40, 0, 666666.6667, 0.0, 6, 6, 6.0, 0.0, 0.0, 0, 0, 0,
+        0, 1, 0, 0, 0, 0, 9.0, 6.0, 0.0, 40, 0, 0, 0, 0, 0, 0, 2, 12, 0, 0,
+        33, -1, 1, 20, 0.0, 0.0, 0, 0, 0.0, 0.0, 0, 0
+    ]
+    
+    # Generate feature names based on the number of features
+    feature_names = [f"feature_{i}" for i in range(len(sample_features))]
+    
+    return jsonify({
+        "features": sample_features,
+        "feature_names": feature_names
+    })
 
-        # 使用subprocess替代os.system
-        import subprocess
-        result = subprocess.run(
-            ["python", "training.py"],
-            capture_output=True,
-            text=True,
-            timeout=300  # 5分钟超时
-        )
-
-        # 记录训练日志
-        with open("retrain.log", "w") as f:
-            f.write(f"STDOUT:\n{result.stdout}\n")
-            f.write(f"STDERR:\n{result.stderr}\n")
-
-        # 检查是否成功
-        if result.returncode != 0:
-            logger.error(f"Training failed: {result.stderr}")
-            return jsonify({
-                "status": "error",
-                "message": f"Training failed: {result.stderr[:200]}"
-            }), 500
-
-        # 重新加载模型组件
-        if load_model_components():
-            return jsonify({
-                "status": "success",
-                "message": "Model retrained and loaded successfully.",
-                "version": MODEL_VERSION
-            })
-        else:
-            return jsonify({
-                "status": "error",
-                "message": "Model retrained but failed to load. Check retrain.log for details."
-            }), 500
-
-    except subprocess.TimeoutExpired:
-        logger.error("Training timed out")
-        return jsonify({
-            "status": "error",
-            "message": "Training timed out after 5 minutes."
-        }), 500
-    except Exception as e:
-        logger.error(f"Retraining error: {e}")
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
-
-
-@app.route('/api/model-info', methods=['GET'])
-def get_model_info():
-    """
-    Get detailed model information
-    """
-    if not MODEL or not FEATURE_COLUMNS:
-        return jsonify({
-            "status": "error",
-            "message": "Model not loaded"
-        }), 500
-
-    try:
-        # 尝试加载元数据
-        metadata = {}
-        if os.path.exists(MODEL_PATHS['metadata']):
-            metadata = joblib.load(MODEL_PATHS['metadata'])
-
-        return jsonify({
-            "status": "success",
-            "model_info": {
-                "type": "RandomForest",
-                "n_estimators": MODEL.n_estimators if hasattr(MODEL, 'n_estimators') else 100,
-                "features_count": len(FEATURE_COLUMNS),
-                "feature_names": FEATURE_COLUMNS[:10],  # 只显示前10个
-                "classes": LE.classes_.tolist() if LE else [],
-                "version": MODEL_VERSION,
-                "trained_at": MODEL_TRAINED_AT,
-                "accuracy": metadata.get('accuracy', 0.0),
-                "location": MODEL_DIR
-            }
-        })
-    except Exception as e:
-        logger.error(f"Error getting model info: {e}")
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
-
+# 产生一组随机数据
 @app.route('/api/random', methods=['GET'])
 def get_random_data():
     """
@@ -444,6 +259,7 @@ def get_random_data():
         "feature_names": feature_names
     })
 
+# 模拟DDOS攻击，这一部分的数据产生肯定有问题！！！
 @app.route('/api/simulate-attack', methods=['GET'])
 def simulate_attack():
     """
@@ -500,6 +316,7 @@ def simulate_attack():
         "feature_names": feature_names
     })
 
+# 预测部分，改了之后应该是有道理的，但是还需要测试
 @app.route('/api/predict', methods=['POST'])
 def predict_api():
     """
@@ -531,11 +348,27 @@ def predict_api():
             # Add to in-memory alerts if it's not benign
             if result['predicted_label'].upper() != 'BENIGN':
                 with alerts_lock:
+                    # 根据攻击类型定义严重程度
+                    attack_severity = {
+                        'DDOS': 'Critical',
+                        'DOS': 'High',
+                        'PORTSCAN': 'Medium',
+                        'BOT': 'High',
+                        'INFLITRATION': 'High',
+                        'BRUTEFORCE': 'Medium',
+                        'SQLINJECTION': 'Critical',
+                        'XSS': 'Medium',
+                        'FTP-PATATOR': 'Medium',
+                        'SSH-PATATOR': 'Medium'
+                    }
+                    severity = attack_severity.get(result['predicted_label'].upper(), result['threat_level'])
+                            
                     alert = {
                         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "type": result['predicted_label'],
                         "confidence": result['confidence'],
-                        "level": result['threat_level']
+                        "level": severity,
+                        "threat_level": result['threat_level']  # 保留原有的基于置信度的威胁等级
                     }
                     alerts.append(alert)
                     # Keep only last 50 alerts
@@ -558,7 +391,7 @@ def get_alerts():
     with alerts_lock:
         # Return alerts in reverse order (newest first)
         return jsonify(list(reversed(alerts)))
-
+# 历史记录功能，基于sqlite的数据库
 @app.route('/api/history', methods=['GET'])
 def get_history():
     """
@@ -573,11 +406,27 @@ def get_history():
         
         history = []
         for row in rows:
+            # 根据攻击类型定义严重程度
+            attack_severity = {
+                'DDOS': 'Critical',
+                'DOS': 'High',
+                'PORTSCAN': 'Medium',
+                'BOT': 'High',
+                'INFLITRATION': 'High',
+                'BRUTEFORCE': 'Medium',
+                'SQLINJECTION': 'Critical',
+                'XSS': 'Medium',
+                'FTP-PATATOR': 'Medium',
+                'SSH-PATATOR': 'Medium'
+            }
+            severity = attack_severity.get(row[1].upper(), row[3])
+            
             history.append({
                 "timestamp": row[0],
                 "type": row[1],
                 "confidence": row[2],
-                "level": row[3]
+                "level": severity,
+                "threat_level": row[3]  # 保留原有的基于置信度的威胁等级
             })
         
         return jsonify(history)
@@ -592,8 +441,36 @@ def get_performance():
     """
     return jsonify(PERFORMANCE_METRICS)
 
+# 重训练模型部分，直接执行重训练脚本
+@app.route('/api/retrain', methods=['POST'])
+def retrain_model():
+    """
+    Retrain the model
+    """
+    try:
+        # Execute the training script
+        os.system("python trainning.py > retrain.log 2>&1")
+        
+        # Reload model components
+        if load_model_components():
+            return jsonify({
+                "status": "success",
+                "message": "Model retrained and loaded successfully."
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Model retrained but failed to load. Check retrain.log for details."
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"Retraining error: {e}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
 
-
+# 新加的，但是和上面的'/api/retrain'接口有很多重复的部分
 @app.route('/api/upload-and-retrain', methods=['POST'])
 def upload_and_retrain():
     """
@@ -659,44 +536,16 @@ def upload_and_retrain():
             "status": "error",
             "message": str(e)
         }), 500
-
-
+# 心跳检测
 @app.route('/health', methods=['GET'])
 def health_check():
     """
     Health check endpoint
     """
-    health_status = {
+    return jsonify({
         "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
-        "components": {
-            "model_loaded": MODEL is not None,
-            "scaler_loaded": SCALER is not None,
-            "encoder_loaded": LE is not None,
-            "database": os.path.exists(config.DATABASE_PATH),
-            "model_dir": os.path.exists(config.MODEL_DIR)
-        },
-        "statistics": {
-            "alerts_count": len(alerts),
-            "db_records": 0
-        },
-        "model_info": {
-            "version": MODEL_VERSION,
-            "features": len(FEATURE_COLUMNS) if FEATURE_COLUMNS else 0
-        }
-    }
-
-    # 获取数据库记录数
-    try:
-        conn = sqlite3.connect(config.DATABASE_PATH)
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM detection_history")
-        health_status["statistics"]["db_records"] = c.fetchone()[0]
-        conn.close()
-    except:
-        health_status["statistics"]["db_records"] = -1
-
-    return jsonify(health_status)
+        "model_loaded": MODEL is not None
+    })
 
 if __name__ == '__main__':
     # Load model components on startup

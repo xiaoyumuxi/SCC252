@@ -109,3 +109,18 @@ if result['status'] == 'success':
         print("\n🟢 预测：流量正常 (BENIGN)")
     else:
         print(f"\n🔴 预测：检测到恶意攻击！类型为 {result['predicted_label']}")
+        # 根据攻击类型提供更详细的说明
+        attack_types = {
+            'DDOS': '分布式拒绝服务攻击',
+            'DOS': '拒绝服务攻击',
+            'PORTSCAN': '端口扫描攻击',
+            'BOT': '僵尸网络活动',
+            'INFLITRATION': '渗透攻击',
+            'BRUTEFORCE': '暴力破解攻击',
+            'SQLINJECTION': 'SQL注入攻击',
+            'XSS': '跨站脚本攻击',
+            'FTP-PATATOR': 'FTP密码爆破',
+            'SSH-PATATOR': 'SSH密码爆破'
+        }
+        attack_description = attack_types.get(result['predicted_label'].upper(), '未知攻击类型')
+        print(f"攻击类型描述: {attack_description}")
