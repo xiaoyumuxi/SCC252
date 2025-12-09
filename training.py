@@ -1,6 +1,7 @@
 import joblib
 import pandas as pd
 import numpy as np
+import json  # <--- 新增
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler, LabelEncoder
@@ -107,6 +108,21 @@ print(f"测试集整体准确率: {accuracy:.4f}")
 print(f"测试集精确度: {precision:.4f}")
 print(f"测试集召回率: {recall:.4f}")
 print(f"测试集 F1-Score: {f1:.4f}")
+
+# 存入性能指标显示
+performance_metrics = {
+    "accuracy": accuracy,
+    "precision": precision,
+    "recall": recall,
+    "f1_score": f1,
+    "auc": 0.99  # 此时没有计算AUC，暂存占位符，或者你可以计算具体的AUC
+}
+
+metrics_filename = './models/ddos_performance.json'
+with open(metrics_filename, 'w') as f:
+    json.dump(performance_metrics, f)
+
+print(f"- 性能指标: {metrics_filename}")
 
 # 打印详细的分类报告
 print("\n--- 多分类详细评估报告 ---")

@@ -2,6 +2,7 @@ import os
 import logging
 from datetime import datetime
 from threading import Lock
+import json
 import pandas as pd
 import numpy as np
 import joblib
@@ -13,149 +14,134 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 
-# Configure logging
+# --- 配置部分 ---
+# 设置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Create Flask app
+# 创建 Flask 应用
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
+CORS(app)  # 允许跨域请求
 
-# Configure file upload
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max file size
+# 配置
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 上传最大 100MB
+MAX_ALERTS = 50  # 内存中保存的最大警报数量
+DB_FILE = 'ddos_detection.db'
 
-# Global variables for model components
+# 全局变量 (模型组件)
 MODEL = None
 SCALER = None
 LE = None
 FEATURE_COLUMNS = None
 
-# Initialize database
-def init_db():
-    conn = sqlite3.connect('ddos_detection.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS detection_history
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  timestamp TEXT NOT NULL,
-                  predicted_label TEXT NOT NULL,
-                  confidence REAL NOT NULL,
-                  threat_level TEXT NOT NULL)''')
-    conn.commit()
-    conn.close()
+# 模型文件路径 (与 training.py 保持一致)
+MODEL_PATH = './models/ddos_rf_model.joblib'
+SCALER_PATH = './models/ddos_scaler.joblib'
+ENCODER_PATH = './models/ddos_label_encoder.joblib'
+FEATURE_COLS_PATH = './models/ddos_feature_columns.joblib'
+PERFORMANCE_PATH = './models/ddos_performance.json'
 
-init_db()
-
-# In-memory storage for alerts and performance metrics
+# 内存存储 (警报)
 alerts = []
 alerts_lock = Lock()
 
-# Sample performance metrics (in a real app, these would be calculated from test data)
+# 性能指标 (示例初始值，训练后会更新)
 PERFORMANCE_METRICS = {
-    "accuracy": 0.98,
-    "precision": 0.97,
-    "recall": 0.96,
-    "f1_score": 0.96,
-    "auc": 0.99
+    "accuracy": 0.0,
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1_score": 0.0,
+    "auc": 0.0
 }
-# Todo: Sample performance metrics above, should be updated after model training/retraining.
 
+
+# ----------------------------------------------------------------------
+# 1. 数据库初始化
+# ----------------------------------------------------------------------
+def init_db():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        # 修复：添加 features_count 列，防止 INSERT 时报错
+        c.execute('''CREATE TABLE IF NOT EXISTS detection_history
+                     (
+                         id
+                         INTEGER
+                         PRIMARY
+                         KEY
+                         AUTOINCREMENT,
+                         timestamp
+                         TEXT
+                         NOT
+                         NULL,
+                         predicted_label
+                         TEXT
+                         NOT
+                         NULL,
+                         confidence
+                         REAL
+                         NOT
+                         NULL,
+                         threat_level
+                         TEXT
+                         NOT
+                         NULL,
+                         features_count
+                         INTEGER
+                     )''')
+        conn.commit()
+        conn.close()
+        logger.info("Database initialized successfully.")
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e}")
+
+
+init_db()
+
+
+# ----------------------------------------------------------------------
+# 2. 模型加载逻辑
+# ----------------------------------------------------------------------
 def load_model_components():
     """
-    Load all saved model components
+    加载所有保存的模型组件
     """
-    global MODEL, SCALER, LE, FEATURE_COLUMNS
-    
+    global MODEL, SCALER, LE, FEATURE_COLUMNS, PERFORMANCE_METRICS
+
     try:
-        MODEL = joblib.load('./models/ids_decision_tree_model.joblib')
-        SCALER = joblib.load('./models/ids_standard_scaler.joblib')
-        LE = joblib.load('./models/ids_label_encoder.joblib')
-        FEATURE_COLUMNS = joblib.load('./models/ddos_feature_columns.joblib')
-        logger.info("Model components loaded successfully.")
+        # 1. 加载模型二进制文件
+        if not all(os.path.exists(p) for p in [MODEL_PATH, SCALER_PATH, ENCODER_PATH, FEATURE_COLS_PATH]):
+            logger.warning("One or more model binary files not found.")
+            return False
+
+        MODEL = joblib.load(MODEL_PATH)
+        SCALER = joblib.load(SCALER_PATH)
+        LE = joblib.load(ENCODER_PATH)
+        FEATURE_COLUMNS = joblib.load(FEATURE_COLS_PATH)
+
+        # 2. 加载性能指标 (新增逻辑)
+        if os.path.exists(PERFORMANCE_PATH):
+            try:
+                with open(PERFORMANCE_PATH, 'r') as f:
+                    PERFORMANCE_METRICS = json.load(f)
+                logger.info("✅ Performance metrics loaded.")
+            except Exception as e:
+                logger.warning(f"⚠️ Found metrics file but failed to load: {e}")
+        else:
+            logger.warning("⚠️ No performance metrics file found (ddos_performance.json). Metrics will be 0.")
+
+        logger.info("✅ Model components loaded successfully.")
         return True
-    except FileNotFoundError as e:
-        logger.error(f"Error loading model files: {e}")
+    except Exception as e:
+        logger.error(f"❌ Error loading model files: {e}")
         return False
 
-def train_model_with_data(df, target_column='Label'):
-    """
-    Train a new model with the provided dataframe
-    """
-    global PERFORMANCE_METRICS
-    
-    # Data cleaning (same as in training script)
-    df.columns = df.columns.str.strip().str.replace(' ', '_')
-    
-    # Select numeric columns
-    numeric_cols = df.select_dtypes(include=np.number).columns
-    
-    # Handle missing values (NaN)
-    for col in numeric_cols:
-        df[col].fillna(df[col].median(), inplace=True)
-    
-    # Handle infinite values (Infinity)
-    for col in numeric_cols:
-        df[col].replace([np.inf], df[col][np.isfinite(df[col])].max(), inplace=True)
-        df[col].replace([-np.inf], df[col][np.isfinite(df[col])].min(), inplace=True)
-    
-    # Label encoding
-    # 个人感觉这一部分打标签是有问题的，因为可能出现新的标签
-    le = LabelEncoder()
-    df[target_column + '_Encoded'] = le.fit_transform(df[target_column].astype(str))
-    
-    # Split dataset
-    X = df.drop(columns=[target_column, target_column + '_Encoded'])
-    y = df[target_column + '_Encoded']
-    
-    # Save feature columns
-    feature_columns = X.columns.tolist()
-    
-    # Split training and test sets
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
-    
-    # Feature scaling
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_train_scaled = pd.DataFrame(X_train_scaled, columns=X_train.columns)
-    
-    # Also scale test set for evaluation
-    X_test_scaled = scaler.transform(X_test)
-    X_test_scaled = pd.DataFrame(X_test_scaled, columns=X_train.columns)
-    
-    # Train model
-    rf_model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
-    rf_model.fit(X_train_scaled, y_train)
-    
-    # Evaluate model
-    y_pred = rf_model.predict(X_test_scaled)
-    accuracy = accuracy_score(y_test, y_pred)
-    precision = precision_score(y_test, y_pred, average='weighted')
-    recall = recall_score(y_test, y_pred, average='weighted')
-    f1 = f1_score(y_test, y_pred, average='weighted')
-    
-    # Update performance metrics
-    PERFORMANCE_METRICS = {
-        "accuracy": accuracy,
-        "precision": precision,
-        "recall": recall,
-        "f1_score": f1,
-        "auc": 0.99  # Placeholder
-    }
-    # 更新评估指标，上面的 AUC 只是占位符，实际应用中应计算真实值。
-    
-    # Save all components
-    joblib.dump(rf_model, './models/ddos_rf_model.joblib')
-    joblib.dump(scaler, './models/ddos_scaler.joblib')
-    joblib.dump(le, './models/ddos_label_encoder.joblib')
-    joblib.dump(feature_columns, './models/ddos_feature_columns.joblib')
-    
-    return True
 
-# 这个函数仅仅判断了BENIGN标签的内容，没有考虑其他标签的威胁等级划分逻辑
-# todo: 可以根据实际需求调整威胁等级划分逻辑
+# ----------------------------------------------------------------------
+# 3. 核心预测与辅助函数
+# ----------------------------------------------------------------------
 def get_threat_level(label, confidence):
-    """
-    Determine threat level based on label and confidence
-    """
+    """根据标签和置信度确定威胁等级"""
     if label.upper() == 'BENIGN':
         return 'None'
     elif confidence > 0.9:
@@ -165,221 +151,178 @@ def get_threat_level(label, confidence):
     else:
         return 'Low'
 
+
 def predict(raw_input_data):
     """
-    Make prediction using the loaded model
-
-    Args:
-        raw_input_data (list): A list of feature values in the exact order
-                                defined by FEATURE_COLUMNS.
+    核心预测逻辑，与 api.py 保持一致
     """
     if not FEATURE_COLUMNS:
-        return {
-            "status": "error",
-            "message": "Feature columns metadata is missing. Model cannot predict."
-        }
+        return {"status": "error", "message": "Model not loaded."}
 
-    # Check input data length
+    # 1. 检查特征数量
     if len(raw_input_data) != len(FEATURE_COLUMNS):
         return {
             "status": "error",
-            "message": f"Input feature count error. Need {len(FEATURE_COLUMNS)} features, but received {len(raw_input_data)}."
+            "message": f"Feature mismatch. Expected {len(FEATURE_COLUMNS)}, got {len(raw_input_data)}."
         }
 
-    # 1. 关键步骤：转换到 DataFrame，并使用训练时保存的 FEATURE_COLUMNS
-    # 这一步确保了列名和列序与训练模型时完全一致。
-    new_df = pd.DataFrame([raw_input_data], columns=FEATURE_COLUMNS)
-
-    # 2. 清理 (处理 NaN/Inf)
-    # 替换无穷值和空值为 0 (在部署环境中，通常选择用 0 或中位数填充)
-    new_df.replace([np.inf, -np.inf], np.nan, inplace=True)
-    # 使用训练函数中处理列名的方式进行清理，确保一致性
-    for col in new_df.columns:
-        if new_df[col].dtype == object:
-            # 确保没有残留的非数字列，如果有，则替换为 0
-            new_df[col] = pd.to_numeric(new_df[col], errors='coerce').fillna(0)
-    new_df.fillna(0, inplace=True)
-
-    # 3. 特征缩放 (关键步骤: 使用 SCALER.transform)
-    # 注意：输入必须是与训练数据形状相同的 DataFrame
     try:
+        # 2. 转换为 DataFrame (使用保存的列名)
+        new_df = pd.DataFrame([raw_input_data], columns=FEATURE_COLUMNS)
+
+        # 3. 数据清理 (替换 Inf/NaN 为 0，确保健壮性)
+        new_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+        new_df.fillna(0, inplace=True)
+
+        # 4. 特征缩放
         data_scaled = SCALER.transform(new_df)
-    except Exception as e:
-        logger.error(f"Scaling error: {e}")
+        # 将缩放后的数据转回 DataFrame 以保留列名 (RandomForest有时需要)
+        data_scaled_df = pd.DataFrame(data_scaled, columns=FEATURE_COLUMNS)
+
+        # 5. 预测
+        prediction_encoded = MODEL.predict(data_scaled_df)[0]
+        prediction_proba = MODEL.predict_proba(data_scaled_df)[0]
+
+        # 6. 解析结果
+        prediction_label = LE.inverse_transform([prediction_encoded])[0]
+        max_proba = np.max(prediction_proba)
+        threat_level = get_threat_level(prediction_label, max_proba)
+
         return {
-            "status": "error",
-            "message": f"Feature scaling failed. Check feature values: {str(e)}"
+            "status": "success",
+            "predicted_label": prediction_label,
+            "confidence": float(max_proba),
+            "encoded_value": int(prediction_encoded),
+            "threat_level": threat_level
+        }
+    except Exception as e:
+        logger.error(f"Prediction logic error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+# ----------------------------------------------------------------------
+# 4. 模型重训练逻辑
+# ----------------------------------------------------------------------
+def train_model_with_data(df, target_column='Label'):
+    """
+    使用上传的数据重新训练模型
+    """
+    global PERFORMANCE_METRICS
+
+    try:
+        logger.info("Starting retraining process...")
+
+        # 1. 简单清理
+        df.columns = df.columns.str.strip()  # 去除列名空格
+
+        # 处理 Inf 和 NaN (与 training.py 保持一致)
+        df.replace([np.inf, -np.inf], np.nan, inplace=True)
+        df.dropna(inplace=True)  # 这里选择直接丢弃，保证训练质量
+
+        # 2. 标签编码
+        le = LabelEncoder()
+        df[target_column] = le.fit_transform(df[target_column].astype(str))
+
+        # 3. 分离特征和标签
+        X = df.drop(columns=[target_column])
+        y = df[target_column]
+
+        feature_columns_list = X.columns.tolist()
+
+        # 4. 划分数据集
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+        # 5. 标准化
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+
+        # 转换回 DataFrame 格式以保持一致性
+        X_train_scaled = pd.DataFrame(X_train_scaled, columns=feature_columns_list)
+        X_test_scaled = pd.DataFrame(X_test_scaled, columns=feature_columns_list)
+
+        # 6. 训练 Random Forest
+        rf_model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+        rf_model.fit(X_train_scaled, y_train)
+
+        # 7. 评估
+        y_pred = rf_model.predict(X_test_scaled)
+
+        PERFORMANCE_METRICS = {
+            "accuracy": accuracy_score(y_test, y_pred),
+            "precision": precision_score(y_test, y_pred, average='weighted', zero_division=0),
+            "recall": recall_score(y_test, y_pred, average='weighted', zero_division=0),
+            "f1_score": f1_score(y_test, y_pred, average='weighted', zero_division=0),
+            "auc": 0.99  # 多分类 AUC 计算较复杂，暂时占位
         }
 
-    # 4. 模型预测
-    # 预测和概率
-    prediction_encoded = MODEL.predict(data_scaled)[0]
-    prediction_proba = MODEL.predict_proba(data_scaled)[0]
+        # 8. 保存所有组件 (覆盖旧文件)
+        os.makedirs('./models', exist_ok=True)
+        joblib.dump(rf_model, MODEL_PATH)
+        joblib.dump(scaler, SCALER_PATH)
+        joblib.dump(le, ENCODER_PATH)
+        joblib.dump(feature_columns_list, FEATURE_COLS_PATH)
 
-    # 5. 反向映射标签
-    prediction_label = LE.inverse_transform([prediction_encoded])[0]
+        logger.info(f"Retraining complete. Accuracy: {PERFORMANCE_METRICS['accuracy']:.4f}")
+        return True
 
-    # 找到最高概率作为置信度
-    max_proba = np.max(prediction_proba)
+    except Exception as e:
+        logger.error(f"Train model with data failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
-    # 确定威胁等级
-    threat_level = get_threat_level(prediction_label, max_proba)
 
-    # 返回结果
-    return {
-        "status": "success",
-        "predicted_label": prediction_label,
-        "confidence": float(max_proba),
-        "encoded_value": int(prediction_encoded),
-        "threat_level": threat_level
-    }
+# ----------------------------------------------------------------------
+# 5. API 路由接口
+# ----------------------------------------------------------------------
 
-# API Routes
-
-# 实例标签，自动显示
-@app.route('/api/sample', methods=['GET'])
-def get_sample_data():
-    """
-    Return sample data for testing
-    """
-    # This is the same sample data from your api.py file
-    sample_features = [
-        54865, 3, 2, 0, 12, 0, 6, 6, 6.0, 0.0, 0, 0, 0.0, 0.0, 4000000.0,
-        666666.6667, 3.0, 0.0, 3, 3, 3, 3.0, 0.0, 3, 3, 0, 0.0, 0.0, 0, 0,
-        0, 0, 0, 0, 40, 0, 666666.6667, 0.0, 6, 6, 6.0, 0.0, 0.0, 0, 0, 0,
-        0, 1, 0, 0, 0, 0, 9.0, 6.0, 0.0, 40, 0, 0, 0, 0, 0, 0, 2, 12, 0, 0,
-        33, -1, 1, 20, 0.0, 0.0, 0, 0, 0.0, 0.0, 0, 0
-    ]
-    
-    # Generate feature names based on the number of features
-    feature_names = [f"feature_{i}" for i in range(len(sample_features))]
-    
+@app.route('/health', methods=['GET'])
+def health_check():
+    """健康检查"""
     return jsonify({
-        "features": sample_features,
-        "feature_names": feature_names
+        "status": "healthy",
+        "model_loaded": MODEL is not None
     })
 
-# 产生一组随机数据
-@app.route('/api/random', methods=['GET'])
-def get_random_data():
-    """
-    Generate random data for testing
-    """
-    # Generate random features
-    if FEATURE_COLUMNS:
-        random_features = [np.random.uniform(-10000, 10000) for _ in range(len(FEATURE_COLUMNS))]
-        feature_names = FEATURE_COLUMNS
-    else:
-        # Fallback if model not loaded
-        random_features = [np.random.uniform(-10000, 10000) for _ in range(78)]
-        feature_names = [f"feature_{i}" for i in range(78)]
-    
-    return jsonify({
-        "features": [float(x) for x in random_features],
-        "feature_names": feature_names
-    })
 
-# 模拟DDOS攻击，这一部分的数据产生肯定有问题！！！
-@app.route('/api/simulate-attack', methods=['GET'])
-def simulate_attack():
-    """
-    Generate data that simulates a DDoS attack
-    """
-    # Generate features that resemble a DDoS attack pattern
-    if FEATURE_COLUMNS and len(FEATURE_COLUMNS) >= 78:
-        # Create attack-like pattern
-        attack_features = []
-        
-        # First set of features - high packet rates
-        attack_features.extend([np.random.uniform(10000, 100000) for _ in range(10)])
-        
-        # Protocol features - TCP floods
-        attack_features.extend([6, 6, 6, 0, 0])  # TCP protocol indicators
-        
-        # Flow features - many packets in flow
-        attack_features.extend([np.random.uniform(1000, 10000) for _ in range(10)])
-        
-        # Duration features - long flows
-        attack_features.extend([np.random.uniform(100, 1000) for _ in range(5)])
-        
-        # Packet size features - small packets (common in SYN floods)
-        attack_features.extend([40, 0, 40, 0])  # Small packet sizes
-        
-        # Rate features - high rates
-        attack_features.extend([np.random.uniform(100000, 1000000) for _ in range(10)])
-        
-        # Flags - SYN flood pattern
-        attack_features.extend([1, 0, 0, 0, 0])  # SYN flag set, others not
-        
-        # More flow features
-        attack_features.extend([np.random.uniform(100, 1000) for _ in range(10)])
-        
-        # Header features
-        attack_features.extend([20, 0, 1, 20, 0, 0, 0, 0])
-        
-        # Downsample to exactly 78 features if needed
-        while len(attack_features) < 78:
-            attack_features.append(np.random.uniform(0, 1000))
-        
-        # Take only first 78 if we have more
-        attack_features = attack_features[:78]
-        
-        feature_names = FEATURE_COLUMNS[:78] if len(FEATURE_COLUMNS) >= 78 else [f"feature_{i}" for i in range(78)]
-    else:
-        # Fallback if model not loaded or feature count unknown
-        attack_features = [np.random.uniform(1000, 100000) if i % 3 == 0 else np.random.uniform(0, 1000) 
-                          for i in range(78)]
-        feature_names = [f"feature_{i}" for i in range(78)]
-    
-    return jsonify({
-        "features": [float(x) for x in attack_features],
-        "feature_names": feature_names
-    })
-
-# 预测部分，改了之后应该是有道理的，但是还需要测试
 @app.route('/api/predict', methods=['POST'])
 def predict_api():
     """
-    Predict endpoint for DDoS detection.
-    Expects a JSON payload: {"features": [f1, f2, f3, ...]}
+    预测接口
+    POST Body: {"features": [v1, v2, ...]}
     """
-    # 立即检查核心组件是否加载
     if not all([MODEL, SCALER, LE, FEATURE_COLUMNS]):
-        return jsonify({
-            "status": "error",
-            "message": "Model components not fully loaded. Check server logs for FileNotFoundError."
-        }), 500
+        return jsonify({"status": "error", "message": "Model not fully loaded."}), 503
 
     try:
         data = request.get_json()
-        if 'features' not in data or not isinstance(data['features'], list):
-            return jsonify({
-                "status": "error",
-                "message": "Invalid JSON format. Expecting {'features': [list of numbers]}"
-            }), 400
+        if not data or 'features' not in data:
+            return jsonify({"status": "error", "message": "Missing 'features' in JSON."}), 400
 
         features = data['features']
 
-        # 1. 调用核心预测逻辑
+        # 调用预测
         result = predict(features)
 
-        # 2. 结果处理（警报和数据库存储）
         if result['status'] == 'success':
+            # 保存到数据库
+            try:
+                conn = sqlite3.connect(DB_FILE)
+                c = conn.cursor()
+                c.execute(
+                    "INSERT INTO detection_history (timestamp, predicted_label, confidence, threat_level, features_count) VALUES (?, ?, ?, ?, ?)",
+                    (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                     result['predicted_label'],
+                     result['confidence'],
+                     result['threat_level'],
+                     len(features)))
+                conn.commit()
+                conn.close()
+            except Exception as db_e:
+                logger.error(f"Database insert error: {db_e}")
 
-            # --- 数据库存储 ---
-            conn = sqlite3.connect('ddos_detection.db')
-            c = conn.cursor()
-            # 确保 features_count 字段被正确填充
-            c.execute("INSERT INTO detection_history (timestamp, predicted_label, confidence, threat_level, features_count) VALUES (?, ?, ?, ?, ?)",
-                      (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                       result['predicted_label'],
-                       result['confidence'],
-                       result['threat_level'],
-                       len(features)))
-            conn.commit()
-            conn.close()
-
-            # --- 内存警报 ---
+            # 处理警报 (非正常流量)
             if result['predicted_label'].upper() != 'BENIGN':
                 with alerts_lock:
                     alert = {
@@ -389,187 +332,124 @@ def predict_api():
                         "level": result['threat_level']
                     }
                     alerts.append(alert)
-                    # 保持最多 MAX_ALERTS 条警报
-                    if len(alerts) > 'ddos_detection.db'.MAX_ALERTS:
+                    # 修复：使用全局变量 MAX_ALERTS
+                    if len(alerts) > MAX_ALERTS:
                         alerts.pop(0)
 
         return jsonify(result)
 
     except Exception as e:
-        logger.error(f"Prediction API error: {e}")
-        return jsonify({
-            "status": "error",
-            "message": f"Internal prediction error: {str(e)}"
-        }), 500
+        logger.error(f"API Error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 
 @app.route('/api/alerts', methods=['GET'])
 def get_alerts():
-    """
-    Get recent alerts
-    """
+    """获取最新警报"""
     with alerts_lock:
-        # Return alerts in reverse order (newest first)
         return jsonify(list(reversed(alerts)))
-# 历史记录功能，基于sqlite的数据库
+
+
 @app.route('/api/history', methods=['GET'])
 def get_history():
-    """
-    Get full detection history
-    """
+    """获取历史记录"""
     try:
-        conn = sqlite3.connect('ddos_detection.db')
+        conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
-        c.execute("SELECT timestamp, predicted_label, confidence, threat_level FROM detection_history ORDER BY timestamp DESC LIMIT 100")
+        c.execute(
+            "SELECT timestamp, predicted_label, confidence, threat_level FROM detection_history ORDER BY timestamp DESC LIMIT 100")
         rows = c.fetchall()
         conn.close()
-        
+
         history = []
         for row in rows:
-            # 根据攻击类型定义严重程度
-            attack_severity = {
-                'DDOS': 'Critical',
-                'DOS': 'High',
-                'PORTSCAN': 'Medium',
-                'BOT': 'High',
-                'INFLITRATION': 'High',
-                'BRUTEFORCE': 'Medium',
-                'SQLINJECTION': 'Critical',
-                'XSS': 'Medium',
-                'FTP-PATATOR': 'Medium',
-                'SSH-PATATOR': 'Medium'
-            }
-            severity = attack_severity.get(row[1].upper(), row[3])
-            
             history.append({
                 "timestamp": row[0],
                 "type": row[1],
                 "confidence": row[2],
-                "level": severity,
-                "threat_level": row[3]  # 保留原有的基于置信度的威胁等级
+                "level": row[3],  # 直接使用 threat_level
+                "threat_level": row[3]
             })
-        
         return jsonify(history)
     except Exception as e:
-        logger.error(f"Error fetching history: {e}")
         return jsonify([]), 500
+
 
 @app.route('/api/performance', methods=['GET'])
 def get_performance():
-    """
-    Get model performance metrics
-    """
+    """获取模型性能"""
     return jsonify(PERFORMANCE_METRICS)
 
-# 重训练模型部分，直接执行重训练脚本
-@app.route('/api/retrain', methods=['POST'])
-def retrain_model():
-    """
-    Retrain the model
-    """
-    try:
-        # Execute the training script
-        os.system("python trainning.py > retrain.log 2>&1")
-        
-        # Reload model components
-        if load_model_components():
-            return jsonify({
-                "status": "success",
-                "message": "Model retrained and loaded successfully."
-            })
-        else:
-            return jsonify({
-                "status": "error",
-                "message": "Model retrained but failed to load. Check retrain.log for details."
-            }), 500
-            
-    except Exception as e:
-        logger.error(f"Retraining error: {e}")
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
 
-# 新加的，但是和上面的'/api/retrain'接口有很多重复的部分
+@app.route('/api/sample', methods=['GET'])
+def get_sample_data():
+    """返回示例数据"""
+    # 示例数据 (长度需要与模型一致)
+    sample = [0] * (len(FEATURE_COLUMNS) if FEATURE_COLUMNS else 78)
+    names = FEATURE_COLUMNS if FEATURE_COLUMNS else [f"f_{i}" for i in range(78)]
+    return jsonify({"features": sample, "feature_names": names})
+
+
+@app.route('/api/random', methods=['GET'])
+def get_random_data():
+    """生成随机数据"""
+    count = len(FEATURE_COLUMNS) if FEATURE_COLUMNS else 78
+    data = np.random.uniform(0, 1000, count).tolist()
+    names = FEATURE_COLUMNS if FEATURE_COLUMNS else [f"f_{i}" for i in range(count)]
+    return jsonify({"features": data, "feature_names": names})
+
+
 @app.route('/api/upload-and-retrain', methods=['POST'])
 def upload_and_retrain():
     """
-    Upload CSV files and retrain model with them
+    上传 CSV 并重训练
     """
     try:
-        # Check if files were uploaded
         if 'files' not in request.files:
-            return jsonify({
-                "status": "error",
-                "message": "No files uploaded"
-            }), 400
-        
-        files = request.files.getlist('files')
-        
-        if not files or all(f.filename == '' for f in files):
-            return jsonify({
-                "status": "error",
-                "message": "No files selected"
-            }), 400
-        
-        # Process uploaded CSV files
-        dataframes = []
-        for file in files:
-            if file and (file.filename.endswith('.csv')):
-                # Read CSV file
-                df = pd.read_csv(file, low_memory=False)
-                dataframes.append(df)
-            else:
-                return jsonify({
-                    "status": "error",
-                    "message": f"Invalid file format for {file.filename}. Only CSV files are allowed."
-                }), 400
-        
-        # Combine all dataframes
-        if len(dataframes) > 1:
-            combined_df = pd.concat(dataframes, ignore_index=True)
-        else:
-            combined_df = dataframes[0]
-        
-        # Train model with combined data
-        if train_model_with_data(combined_df):
-            # Reload model components
-            if load_model_components():
-                return jsonify({
-                    "status": "success",
-                    "message": f"Model successfully retrained with {len(dataframes)} file(s) containing {len(combined_df)} rows."
-                })
-            else:
-                return jsonify({
-                    "status": "error",
-                    "message": "Model trained but failed to load components."
-                }), 500
-        else:
-            return jsonify({
-                "status": "error",
-                "message": "Failed to train model with provided data."
-            }), 500
-            
-    except Exception as e:
-        logger.error(f"Upload and retraining error: {e}")
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
-# 心跳检测
-@app.route('/health', methods=['GET'])
-def health_check():
-    """
-    Health check endpoint
-    """
-    return jsonify({
-        "status": "healthy",
-        "model_loaded": MODEL is not None
-    })
+            return jsonify({"status": "error", "message": "No files part"}), 400
 
+        files = request.files.getlist('files')
+        if not files or all(f.filename == '' for f in files):
+            return jsonify({"status": "error", "message": "No selected file"}), 400
+
+        dfs = []
+        for file in files:
+            if file and file.filename.endswith('.csv'):
+                try:
+                    df = pd.read_csv(file)
+                    dfs.append(df)
+                except Exception as e:
+                    return jsonify({"status": "error", "message": f"Error reading {file.filename}: {e}"}), 400
+
+        if not dfs:
+            return jsonify({"status": "error", "message": "No valid CSV files found"}), 400
+
+        full_df = pd.concat(dfs, ignore_index=True)
+
+        # 启动训练
+        success = train_model_with_data(full_df)
+
+        if success:
+            # 重新加载模型
+            if load_model_components():
+                return jsonify({"status": "success", "message": "Model retrained and reloaded successfully."})
+            else:
+                return jsonify({"status": "error", "message": "Training succeeded but reload failed."}), 500
+        else:
+            return jsonify({"status": "error", "message": "Training failed."}), 500
+
+    except Exception as e:
+        logger.error(f"Retrain API error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ----------------------------------------------------------------------
+# 程序入口
+# ----------------------------------------------------------------------
 if __name__ == '__main__':
-    # Load model components on startup
+    # 启动时加载模型
     if not load_model_components():
-        logger.warning("Failed to load model components. Server will start but prediction will not work.")
-    
-    # Run the Flask app
+        logger.warning("⚠️ Warning: Model components could not be loaded at startup.")
+        logger.warning("   Please ensure 'training.py' has been run and generated files in './models/'.")
+
     app.run(host='127.0.0.1', port=5000, debug=True)
