@@ -65,29 +65,7 @@ def init_db():
         # 修复：添加 features_count 列，防止 INSERT 时报错
         c.execute('''CREATE TABLE IF NOT EXISTS detection_history
                      (
-                         id
-                         INTEGER
-                         PRIMARY
-                         KEY
-                         AUTOINCREMENT,
-                         timestamp
-                         TEXT
-                         NOT
-                         NULL,
-                         predicted_label
-                         TEXT
-                         NOT
-                         NULL,
-                         confidence
-                         REAL
-                         NOT
-                         NULL,
-                         threat_level
-                         TEXT
-                         NOT
-                         NULL,
-                         features_count
-                         INTEGER
+                         id INTEGER PRIMARY KEY AUTOINCREMENT,timestamp TEXT NOT NULL,predicted_label TEXT NOT NULL,confidence REAL NOT NULL,threat_level TEXT NOT NULL,features_count INTEGER
                      )''')
         conn.commit()
         conn.close()
@@ -176,12 +154,12 @@ def predict(raw_input_data):
 
         # 4. 特征缩放
         data_scaled = SCALER.transform(new_df)
-        # 将缩放后的数据转回 DataFrame 以保留列名 (RandomForest有时需要)
-        data_scaled_df = pd.DataFrame(data_scaled, columns=FEATURE_COLUMNS)
 
         # 5. 预测
-        prediction_encoded = MODEL.predict(data_scaled_df)[0]
-        prediction_proba = MODEL.predict_proba(data_scaled_df)[0]
+        # 使用 NumPy 数组（而非带列名的 DataFrame）传入模型，避免 scikit-learn 关于
+        # "X has feature names, but RandomForestClassifier was fitted without feature names" 的警告。
+        prediction_encoded = MODEL.predict(data_scaled)[0]
+        prediction_proba = MODEL.predict_proba(data_scaled)[0]
 
         # 6. 解析结果
         prediction_label = LE.inverse_transform([prediction_encoded])[0]
@@ -198,6 +176,20 @@ def predict(raw_input_data):
     except Exception as e:
         logger.error(f"Prediction logic error: {e}")
         return {"status": "error", "message": str(e)}
+
+
+def get_prediction(raw_input_data):
+    """
+    兼容性包装器：确保在调用预测前模型组件已加载。
+    返回与原 `predict` 相同的字典结构。
+    """
+    # 如果模型或组件尚未加载，尝试加载一次
+    if not all([MODEL, SCALER, LE, FEATURE_COLUMNS]):
+        loaded = load_model_components()
+        if not loaded:
+            return {"status": "error", "message": "Model components not loaded and failed to load."}
+
+    return predict(raw_input_data)
 
 
 # ----------------------------------------------------------------------

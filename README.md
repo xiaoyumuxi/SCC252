@@ -15,7 +15,7 @@ A real-time DDoS attack detection system using machine learning with a React fro
 
 1. Install Python dependencies:
    ```
-   pip install -r web/requirements.txt
+   pip install -r requirements.txt
    ```
 
 2. Train the model (if not already done):
