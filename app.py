@@ -197,7 +197,11 @@ def get_prediction(raw_input_data):
 # ----------------------------------------------------------------------
 def train_model_with_data(df, target_column='Label'):
     """
-    使用上传的数据重新训练模型
+    使用上传的数据重新训练模型。
+    
+    返回值:
+        字典 {'success': True/False, 'message': str, 'stats': dict}
+        stats 包含: total_samples, label_distribution, new_labels_count
     """
     global PERFORMANCE_METRICS
 
@@ -207,6 +211,12 @@ def train_model_with_data(df, target_column='Label'):
         # 1. 简单清理
         df.columns = df.columns.str.strip()  # 去除列名空格
 
+        # 检查是否存在 Label 列
+        if target_column not in df.columns:
+            error_msg = f"Target column '{target_column}' not found in CSV. Available columns: {', '.join(df.columns.tolist())}"
+            logger.error(error_msg)
+            return {'success': False, 'message': error_msg, 'stats': {}}
+
         # 处理 Inf 和 NaN (与 training.py 保持一致)
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
         df.dropna(inplace=True)  # 这里选择直接丢弃，保证训练质量
@@ -214,6 +224,20 @@ def train_model_with_data(df, target_column='Label'):
         # 2. 标签编码
         le = LabelEncoder()
         df[target_column] = le.fit_transform(df[target_column].astype(str))
+
+        # 收集统计信息
+        unique_labels = set(le.classes_)
+        label_dist = df[target_column].value_counts().to_dict()
+        old_labels = set(LE.classes_) if LE else set()
+        new_labels = unique_labels - old_labels
+        stats = {
+            'total_samples': len(df),
+            'label_distribution': {le.inverse_transform([k])[0]: v for k, v in label_dist.items()},
+            'unique_labels': list(unique_labels),
+            'new_labels': list(new_labels),
+            'new_labels_count': len(new_labels)
+        }
+        logger.info(f"Data statistics: {stats}")
 
         # 3. 分离特征和标签
         X = df.drop(columns=[target_column])
@@ -256,13 +280,18 @@ def train_model_with_data(df, target_column='Label'):
         joblib.dump(feature_columns_list, FEATURE_COLS_PATH)
 
         logger.info(f"Retraining complete. Accuracy: {PERFORMANCE_METRICS['accuracy']:.4f}")
-        return True
+        # 保存性能指标
+        with open(PERFORMANCE_PATH, 'w') as f:
+            json.dump(PERFORMANCE_METRICS, f)
+        logger.info(f"Performance metrics saved to {PERFORMANCE_PATH}")
+
+        return {'success': True, 'message': f'Retraining complete. Accuracy: {PERFORMANCE_METRICS["accuracy"]:.4f}', 'stats': stats}
 
     except Exception as e:
         logger.error(f"Train model with data failed: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        return {'success': False, 'message': str(e), 'stats': {}}
 
 
 # ----------------------------------------------------------------------
@@ -419,16 +448,21 @@ def upload_and_retrain():
         full_df = pd.concat(dfs, ignore_index=True)
 
         # 启动训练
-        success = train_model_with_data(full_df)
+        result = train_model_with_data(full_df)
 
-        if success:
+        if result['success']:
             # 重新加载模型
             if load_model_components():
-                return jsonify({"status": "success", "message": "Model retrained and reloaded successfully."})
+                return jsonify({
+                    "status": "success",
+                    "message": result['message'],
+                    "stats": result['stats'],
+                    "performance": PERFORMANCE_METRICS
+                })
             else:
                 return jsonify({"status": "error", "message": "Training succeeded but reload failed."}), 500
         else:
-            return jsonify({"status": "error", "message": "Training failed."}), 500
+            return jsonify({"status": "error", "message": result['message'], "details": result['stats']}), 400
 
     except Exception as e:
         logger.error(f"Retrain API error: {e}")
