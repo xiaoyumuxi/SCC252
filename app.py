@@ -45,6 +45,19 @@ PERFORMANCE_PATH = './models/ddos_performance.json'
 alerts = []
 alerts_lock = Lock()
 
+# 攻击样本库（用于 /api/stream 模拟攻击）
+ATTACK_SAMPLE_LIBRARY = []          # [{'label': 'DoS Hulk', 'features': [...]}, ...]
+attack_samples_lock = Lock()
+
+# 从原始数据集中抽样构建攻击样本库的路径
+ATTACK_DATASET_PATH = os.getenv(
+    'ATTACK_DATASET_PATH',
+    './data/Wednesday-workingHours.pcap_ISCX.csv'
+)
+
+# 频率统计时间窗（秒）
+TIME_WINDOW_SECONDS = 10
+
 # 性能指标 (示例初始值，训练后会更新)
 PERFORMANCE_METRICS = {
     "accuracy": 0.0,
@@ -192,6 +205,86 @@ def get_prediction(raw_input_data):
 
     return predict(raw_input_data)
 
+def build_attack_sample_library():
+    """
+    从原始数据集中，为每种攻击类型采样最多 5 条，构建攻击样本库。
+    只使用 FEATURE_COLUMNS 中定义的特征，保证与模型输入一致。
+    """
+    global ATTACK_SAMPLE_LIBRARY
+
+    with attack_samples_lock:
+        # 已经构建过就直接返回
+        if ATTACK_SAMPLE_LIBRARY:
+            return True
+
+        # 确保模型组件已加载，从而拿到 FEATURE_COLUMNS
+        if not FEATURE_COLUMNS:
+            loaded = load_model_components()
+            if not loaded or not FEATURE_COLUMNS:
+                logger.error("Cannot build attack sample library: FEATURE_COLUMNS not available.")
+                return False
+
+        # 检查数据集路径
+        if not os.path.exists(ATTACK_DATASET_PATH):
+            logger.error(f"Attack dataset file not found: {ATTACK_DATASET_PATH}")
+            return False
+
+        try:
+            logger.info(f"Loading attack dataset from {ATTACK_DATASET_PATH} ...")
+            df = pd.read_csv(ATTACK_DATASET_PATH)
+
+            # 列名去空格，基础清洗
+            df.columns = df.columns.str.strip()
+            if 'Label' not in df.columns:
+                logger.error("Dataset has no 'Label' column.")
+                return False
+
+            df.replace([np.inf, -np.inf], np.nan, inplace=True)
+            df.dropna(inplace=True)
+
+            # 过滤出攻击行（排除 BENIGN）
+            df['Label'] = df['Label'].astype(str).str.strip()
+            attack_df = df[df['Label'].str.upper() != 'BENIGN']
+
+            if attack_df.empty:
+                logger.error("No attack rows found in dataset.")
+                return False
+
+            library = []
+
+            # 按攻击类型分组，每类最多 5 条
+            for label, group in attack_df.groupby('Label'):
+                sample_n = min(5, len(group))
+                sampled = group.sample(n=sample_n, random_state=42)
+
+                for _, row in sampled.iterrows():
+                    features = []
+                    for col in FEATURE_COLUMNS:
+                        if col in sampled.columns:
+                            val = row[col]
+                            try:
+                                val = float(val)
+                            except Exception:
+                                val = 0.0
+                        else:
+                            val = 0.0
+                        features.append(val)
+
+                    library.append({
+                        "label": label,
+                        "features": features
+                    })
+
+            ATTACK_SAMPLE_LIBRARY = library
+            logger.info(
+                f"Attack sample library built: {len(ATTACK_SAMPLE_LIBRARY)} samples "
+                f"from {attack_df['Label'].nunique()} attack types."
+            )
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to build attack sample library: {e}")
+            return False
 
 # ----------------------------------------------------------------------
 # 4. 模型重训练逻辑
@@ -427,6 +520,76 @@ def get_history():
 def get_performance():
     """获取模型性能"""
     return jsonify(PERFORMANCE_METRICS)
+@app.route('/api/stream', methods=['GET'])
+def get_attack_stream_sample():
+    """
+    从攻击样本库中随机选取一条样本，作为模拟攻击流。
+    可选查询参数: ?label=XXX  指定某一种攻击类型。
+
+    额外返回:
+    - attack_frequency: 在 TIME_WINDOW_SECONDS 内的攻击次数（随机模拟）
+    - frequency_level: Low / Medium / High
+    """
+    try:
+        # 如果还没构建过攻击样本库，先构建一次
+        if not ATTACK_SAMPLE_LIBRARY:
+            ok = build_attack_sample_library()
+            if not ok or not ATTACK_SAMPLE_LIBRARY:
+                return jsonify({
+                    "status": "error",
+                    "message": "Attack sample library not available. Check dataset and logs."
+                }), 500
+
+        # 可选：按 label 过滤指定攻击类型
+        label_filter = request.args.get('label')
+        candidates = ATTACK_SAMPLE_LIBRARY
+
+        if label_filter:
+            candidates = [s for s in ATTACK_SAMPLE_LIBRARY if s['label'] == label_filter]
+            if not candidates:
+                return jsonify({
+                    "status": "error",
+                    "message": f"No samples found for label '{label_filter}'."
+                }), 404
+
+        # 1) 从候选库中随机选取一条攻击样本
+        idx = np.random.randint(0, len(candidates))
+        chosen = candidates[idx]
+
+        features = chosen["features"]
+        label = chosen["label"]
+
+        names = FEATURE_COLUMNS if FEATURE_COLUMNS else [
+            f"f_{i}" for i in range(len(features))
+        ]
+
+        # 2) 随机生成攻频：TIME_WINDOW_SECONDS 内的攻击次数，这里模拟 1~10 次
+        attack_frequency = int(np.random.randint(1, 11))  # [1, 10]
+
+        # 3) 根据频率划分等级：
+        #    <5 次   → Low
+        #    5~6 次  → Medium
+        #    ≥7 次   → High
+        if attack_frequency < 5:
+            frequency_level = "Low"
+        elif attack_frequency < 7:
+            frequency_level = "Medium"
+        else:
+            frequency_level = "High"
+
+        return jsonify({
+            "status": "success",
+            "features": features,
+            "feature_names": names,
+            "label": label,                        # 真正的攻击类型名称（如 DoS Hulk）
+            "attack_frequency": attack_frequency,  # TIME_WINDOW_SECONDS 内攻击次数
+            "frequency_level": frequency_level,    # Low / Medium / High
+            "time_window_seconds": TIME_WINDOW_SECONDS
+        })
+
+    except Exception as e:
+        logger.error(f"/api/stream error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @app.route('/api/stream', methods=['GET'])
