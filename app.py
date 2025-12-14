@@ -531,75 +531,95 @@ def get_history():
 def get_performance():
     """获取模型性能"""
     return jsonify(PERFORMANCE_METRICS)
+import random
+import time
+from flask import request, jsonify
+
+# 固定“攻击间隔”
+MODE_INTERVAL_MS = {
+    "Low": 2000,     # 2秒一次
+    "Medium": 1000,  # 1秒一次
+    "High": 500,     # 0.5秒一次（=1秒两次）
+}
+
+# 前端根据“最近10秒次数”分级用的阈值
+# 10秒内：Low=5次，Medium=10次，High=20次
+LEVEL_THRESHOLDS = {
+    "low_max": 5,      # 0~5 => Low
+    "medium_max": 10,  # 6~10 => Medium
+    # >=11 => High
+}
+
+def count_to_level(c: int) -> str:
+    if c <= LEVEL_THRESHOLDS["low_max"]:
+        return "Low"
+    if c <= LEVEL_THRESHOLDS["medium_max"]:
+        return "Medium"
+    return "High"
+
 @app.route('/api/stream', methods=['GET'])
 def get_attack_stream_sample():
     """
-    从攻击样本库中随机选取一条样本，作为模拟攻击流。
-    可选查询参数: ?label=XXX  指定某一种攻击类型。
-
-    额外返回:
-    - attack_frequency: 在 TIME_WINDOW_SECONDS 内的攻击次数（随机模拟）
-    - frequency_level: Low / Medium / High
+    生成一个10秒攻击计划：
+      - Low: 2秒一次
+      - Medium: 1秒一次
+      - High: 0.5秒一次（1秒两次）
+    三档选择是随机的（除非你传 mode=Low/Medium/High）。
+    返回 stream: [{features,label,at_ms,ts}, ...]
     """
     try:
-        # 如果还没构建过攻击样本库，先构建一次
+        # 1) 确保样本库存在
         if not ATTACK_SAMPLE_LIBRARY:
             ok = build_attack_sample_library()
             if not ok or not ATTACK_SAMPLE_LIBRARY:
-                return jsonify({
-                    "status": "error",
-                    "message": "Attack sample library not available. Check dataset and logs."
-                }), 500
+                return jsonify({"status": "error", "message": "Attack sample library not available."}), 500
 
-        # 可选：按 label 过滤指定攻击类型
-        label_filter = request.args.get('label')
+        # 2) window 秒数：默认 TIME_WINDOW_SECONDS，没有就 10
+        default_window = int(TIME_WINDOW_SECONDS) if "TIME_WINDOW_SECONDS" in globals() else 10
+        window_s = int(request.args.get("window", default_window))
+        window_ms = max(1000, window_s * 1000)
+
+        # 3) mode：不传则随机三选一
+        mode = request.args.get("mode")
+        if mode not in MODE_INTERVAL_MS:
+            mode = random.choice(list(MODE_INTERVAL_MS.keys()))
+
+        interval = MODE_INTERVAL_MS[mode]
+
+        # 4) label 过滤（可选）
+        label_filter = request.args.get("label")
         candidates = ATTACK_SAMPLE_LIBRARY
-
         if label_filter:
-            candidates = [s for s in ATTACK_SAMPLE_LIBRARY if s['label'] == label_filter]
-            if not candidates:
-                return jsonify({
-                    "status": "error",
-                    "message": f"No samples found for label '{label_filter}'."
-                }), 404
+            candidates = [s for s in candidates if s.get("label") == label_filter]
+        if not candidates:
+            return jsonify({"status": "error", "message": f"No samples for label={label_filter}"}), 404
 
-        # 1) 从候选库中随机选取一条攻击样本
-        idx = np.random.randint(0, len(candidates))
-        chosen = candidates[idx]
+        # 5) 按固定间隔生成 at_ms
+        offsets = list(range(0, window_ms, interval))  # 不含 window_ms
+        attack_frequency = len(offsets)                # 10秒内次数：Low=5, Med=10, High=20
 
-        features = chosen["features"]
-        label = chosen["label"]
-
-        names = FEATURE_COLUMNS if FEATURE_COLUMNS else [
-            f"f_{i}" for i in range(len(features))
-        ]
-
-        # 2) 随机生成攻频：TIME_WINDOW_SECONDS 内的攻击次数，这里模拟 1~10 次
-        attack_frequency = int(np.random.randint(1, 11))  # [1, 10]
-
-        # 3) 根据频率划分等级：
-        #    <5 次   → Low
-        #    5~6 次  → Medium
-        #    ≥7 次   → High
-        if attack_frequency < 5:
-            frequency_level = "Low"
-        elif attack_frequency < 7:
-            frequency_level = "Medium"
-        else:
-            frequency_level = "High"
+        start_ms = int(time.time() * 1000)
+        stream = []
+        for off in offsets:
+            s = random.choice(candidates)
+            stream.append({
+                "features": s.get("features"),
+                "label": s.get("label"),
+                "at_ms": off,             # 相对开始的偏移
+                "ts": start_ms + off      # 绝对时间戳（可选）
+            })
 
         return jsonify({
-            "status": "success",
-            "features": features,
-            "feature_names": names,
-            "label": label,                        # 真正的攻击类型名称（如 DoS Hulk）
-            "attack_frequency": attack_frequency,  # TIME_WINDOW_SECONDS 内攻击次数
-            "frequency_level": frequency_level,    # Low / Medium / High
-            "time_window_seconds": TIME_WINDOW_SECONDS
+            "status": "ok",
+            "mode": mode,
+            "time_window_seconds": window_s,
+            "attack_frequency": attack_frequency,
+            "frequency_level": count_to_level(attack_frequency),
+            "thresholds": LEVEL_THRESHOLDS,
+            "stream": stream
         })
 
     except Exception as e:
-        logger.error(f"/api/stream error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 

@@ -1,21 +1,47 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, computed } from 'vue';
 import { api } from './services/api';
 import { PerformanceMetrics, PredictionResult, LogEntry } from './types';
 import StatCard from './components/StatCard.vue';
 import RadarChart from './components/RadarChart.vue';
+
+type PredictionResultWithTimestamp = PredictionResult & { timestamp?: string };
+type RealtimeLevel = 'Low' | 'Medium' | 'High';
 
 // --- State ---
 const performanceData = ref<PerformanceMetrics | null>(null);
 const isLoadingPerf = ref(true);
 const isAnalyzing = ref(false);
 const isRetraining = ref(false);
-const predictionResult = ref<PredictionResult | null>(null);
+const predictionResult = ref<PredictionResultWithTimestamp | null>(null);
 const logs = ref<LogEntry[]>([
   { id: 1, timestamp: new Date().toLocaleTimeString(), message: "[SYSTEM] IDS initialized successfully...", type: "success" },
   { id: 2, timestamp: new Date().toLocaleTimeString(), message: "[SYSTEM] Connected to RF Model (78 features)...", type: "info" }
 ]);
 const fileInput = ref<HTMLInputElement | null>(null);
+
+// --- Realtime intensity (10s sliding window) ---
+const isAttackRunning = ref(false);
+const windowMs = ref(10000);
+const realtimeCount = ref(0);
+const realtimeLevel = ref<RealtimeLevel>('Low');
+const streamRunId = ref(0);
+
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+const calcLevel = (count: number, thresholds?: { low_max: number; medium_max: number }): RealtimeLevel => {
+  const lowMax = thresholds?.low_max ?? 2;
+  const medMax = thresholds?.medium_max ?? 7;
+  if (count <= lowMax) return 'Low';
+  if (count <= medMax) return 'Medium';
+  return 'High';
+};
+
+// ✅ 统一一个“展示用 threat level”（攻击运行时用 realtimeLevel，否则用模型 threat_level）
+const displayThreat = computed(() => {
+  if (isAttackRunning.value) return realtimeLevel.value;
+  return (predictionResult.value?.threat_level ?? 'Idle') as any;
+});
 
 // --- Actions ---
 
@@ -33,31 +59,7 @@ const loadPerformance = async () => {
   }
 };
 
-// Simulate Traffic
-const simulateTraffic = async (type: 'normal' | 'attack' | 'random') => {
-  isAnalyzing.value = true;
-  try {
-    // 1. Get Fake Data
-    const data = await api.getTrafficData(type);
-    
-    // 2. Predict
-    const result = await api.predict(data.features);
-    predictionResult.value = result;
-
-    // 3. Log
-    addLog(result);
-  } catch (error: any) {
-    console.error(error);
-    const msg = error.name === 'AbortError' 
-      ? "⚠️ Request Timed Out! Server took too long." 
-      : `❌ Error: ${error.message}`;
-    alert(msg);
-  } finally {
-    isAnalyzing.value = false;
-  }
-};
-
-// Handle Log Adding
+// Handle Log Adding (model result)
 const addLog = (res: PredictionResult) => {
   const newLog: LogEntry = {
     id: Date.now(),
@@ -69,7 +71,146 @@ const addLog = (res: PredictionResult) => {
     threat_level: res.threat_level,
     probabilities: res.probabilities
   };
-  logs.value.unshift(newLog); // Add to top
+  logs.value.unshift(newLog);
+};
+
+// Simulate Traffic
+const simulateTraffic = async (type: 'normal' | 'attack' | 'random') => {
+  isAnalyzing.value = true;
+  const myRun = ++streamRunId.value;
+
+  try {
+    const data: any = await api.getTrafficData(type);
+
+    const stream = Array.isArray(data?.stream) ? data.stream : null;
+
+    // --- ATTACK: play a 10s plan, update intensity in real time ---
+    if (type === 'attack' && stream && stream.length > 0) {
+      isAttackRunning.value = true;
+
+      const thresholds = data.thresholds ?? { low_max: 2, medium_max: 7 };
+      const winSec = Number(data.time_window_seconds ?? 10);
+      windowMs.value = Math.max(1000, winSec * 1000);
+
+      // 滑动窗口事件时间戳
+      const eventTimes: number[] = [];
+      realtimeCount.value = 0;
+      realtimeLevel.value = 'Low';
+
+      logs.value.unshift({
+        id: Date.now(),
+        timestamp: new Date().toLocaleTimeString(),
+        message: `[SIM] Attack plan started (mode=${data.mode ?? 'N/A'}, total=${data.attack_frequency ?? stream.length}, window=${winSec}s)`,
+        type: 'info'
+      });
+
+      // ✅ 定时器：每 200ms 根据“最近10秒事件数”刷新 realtimeLevel（含衰减）
+      const refreshInterval = 200;
+      const intensityTimer = setInterval(() => {
+        const now = Date.now();
+        while (eventTimes.length && now - eventTimes[0] > windowMs.value) eventTimes.shift();
+
+        const newCount = eventTimes.length;
+        const newLevel = calcLevel(newCount, thresholds);
+
+        // 只要还在本轮 run 中，就更新
+        if (streamRunId.value === myRun) {
+          realtimeCount.value = newCount;
+          realtimeLevel.value = newLevel;
+        }
+      }, refreshInterval);
+
+      // 记录等级变化（用于日志）
+      let lastLevel: RealtimeLevel = realtimeLevel.value;
+
+      const start = Date.now();
+
+      // ✅ 按 at_ms 定点触发
+      for (const sample of stream) {
+        if (streamRunId.value !== myRun) break;
+
+        const target = start + Number(sample.at_ms ?? 0);
+        const wait = Math.max(0, target - Date.now());
+        await sleep(wait);
+
+        // “发生一次攻击事件”
+        eventTimes.push(Date.now());
+
+        // 模型预测（保持原流程）
+        const result = await api.predict(sample.features);
+
+        predictionResult.value = {
+          ...result,
+          timestamp: new Date(sample.ts ?? Date.now()).toLocaleTimeString()
+        };
+
+        addLog(result);
+
+        // ✅ 如果等级刚好变了，补一条日志（Low->Medium->High 会很明显）
+        const currentLevel = calcLevel(eventTimes.length, thresholds);
+        if (currentLevel !== lastLevel) {
+          lastLevel = currentLevel;
+          logs.value.unshift({
+            id: Date.now() + Math.random(),
+            timestamp: new Date().toLocaleTimeString(),
+            message: `[ALERT] Traffic intensity escalated to <b>${currentLevel}</b> (10s count≈${eventTimes.length})`,
+            type: currentLevel === 'High' ? 'danger' : 'info'
+          });
+        }
+      }
+
+      logs.value.unshift({
+        id: Date.now() + 1,
+        timestamp: new Date().toLocaleTimeString(),
+        message: `[SIM] Attack plan finished. Waiting for 10s window to decay...`,
+        type: 'info'
+      });
+
+      // ✅ 等到 10 秒窗口自然衰减到 0（更符合“实时10秒内次数”）
+      const decayStart = Date.now();
+      while (streamRunId.value === myRun) {
+        const now = Date.now();
+        while (eventTimes.length && now - eventTimes[0] > windowMs.value) eventTimes.shift();
+        if (eventTimes.length === 0) break;
+
+        // 防止极端情况下卡住：最多等 windowMs + 1s
+        if (now - decayStart > windowMs.value + 1000) break;
+
+        await sleep(refreshInterval);
+      }
+
+      clearInterval(intensityTimer);
+      isAttackRunning.value = false;
+
+      logs.value.unshift({
+        id: Date.now() + 2,
+        timestamp: new Date().toLocaleTimeString(),
+        message: `[SIM] Intensity window cleared (10s count=${realtimeCount.value}, level=${realtimeLevel.value}).`,
+        type: 'info'
+      });
+    } else {
+      // --- NORMAL / RANDOM: single shot as before ---
+      const result = await api.predict(data.features);
+      predictionResult.value = result;
+      addLog(result);
+
+      isAttackRunning.value = false;
+      realtimeCount.value = 0;
+      realtimeLevel.value = 'Low';
+    }
+  } catch (error: any) {
+    console.error(error);
+    const msg = error.name === 'AbortError'
+      ? "⚠️ Request Timed Out! Server took too long."
+      : `❌ Error: ${error.message}`;
+    alert(msg);
+
+    isAttackRunning.value = false;
+    realtimeCount.value = 0;
+    realtimeLevel.value = 'Low';
+  } finally {
+    if (streamRunId.value === myRun) isAnalyzing.value = false;
+  }
 };
 
 // Upload & Retrain
@@ -84,11 +225,11 @@ const handleRetrain = async () => {
   try {
     const res = await api.retrain(file);
     alert("✅ " + res.message);
-    await loadPerformance(); // Refresh stats
-    if (fileInput.value) fileInput.value.value = ''; // Clear input
+    await loadPerformance();
+    if (fileInput.value) fileInput.value.value = '';
   } catch (error: any) {
-    const msg = error.name === 'AbortError' 
-      ? "⚠️ Training Timeout! Dataset might be too large." 
+    const msg = error.name === 'AbortError'
+      ? "⚠️ Training Timeout! Dataset might be too large."
       : `❌ Training Failed: ${error.message}`;
     alert(msg);
   } finally {
@@ -118,29 +259,29 @@ onMounted(() => {
 
     <!-- Top Stats Row -->
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-      <StatCard 
-        title="Accuracy" 
-        :value="performanceData?.accuracy" 
-        color-class="text-green-600" 
-        :is-loading="isLoadingPerf" 
+      <StatCard
+        title="Accuracy"
+        :value="performanceData?.accuracy"
+        color-class="text-green-600"
+        :is-loading="isLoadingPerf"
       />
-      <StatCard 
-        title="Precision" 
-        :value="performanceData?.precision" 
-        color-class="text-blue-600" 
-        :is-loading="isLoadingPerf" 
+      <StatCard
+        title="Precision"
+        :value="performanceData?.precision"
+        color-class="text-blue-600"
+        :is-loading="isLoadingPerf"
       />
-      <StatCard 
-        title="Recall" 
-        :value="performanceData?.recall" 
-        color-class="text-orange-500" 
-        :is-loading="isLoadingPerf" 
+      <StatCard
+        title="Recall"
+        :value="performanceData?.recall"
+        color-class="text-orange-500"
+        :is-loading="isLoadingPerf"
       />
-      <StatCard 
-        title="FPR" 
-        :value="performanceData?.FPR" 
-        color-class="text-red-600" 
-        :is-loading="isLoadingPerf" 
+      <StatCard
+        title="FPR"
+        :value="performanceData?.FPR"
+        color-class="text-red-600"
+        :is-loading="isLoadingPerf"
       />
     </div>
 
@@ -154,21 +295,21 @@ onMounted(() => {
           <p class="text-gray-500 text-sm mb-4">Inject simulated packets to test IDS response.</p>
 
           <div class="space-y-3">
-            <button 
+            <button
               @click="simulateTraffic('normal')"
               :disabled="isAnalyzing"
               class="w-full py-2.5 px-4 bg-white border border-primary text-primary font-semibold uppercase tracking-wide hover:bg-primary hover:text-white transition-colors duration-300 rounded disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               <i class="fas fa-check-circle"></i> Normal Traffic
             </button>
-            <button 
-              @click="simulateTraffic('random')" 
+            <button
+              @click="simulateTraffic('random')"
               :disabled="isAnalyzing"
               class="w-full py-2.5 px-4 bg-white border border-orange-400 text-orange-500 font-semibold uppercase tracking-wide hover:bg-orange-400 hover:text-white transition-colors duration-300 rounded disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               <i class="fas fa-search-location"></i> PortScan Test
             </button>
-            <button 
+            <button
               @click="simulateTraffic('attack')"
               :disabled="isAnalyzing"
               class="w-full py-2.5 px-4 bg-white border border-red-500 text-red-500 font-semibold uppercase tracking-wide hover:bg-red-500 hover:text-white transition-colors duration-300 rounded disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
@@ -190,41 +331,46 @@ onMounted(() => {
           <div class="flex justify-between items-start">
             <div class="flex-1">
               <h6 class="text-gray-400 text-xs uppercase font-bold">Last Detection Result:</h6>
-              <h3 
+              <h3
                 class="text-3xl font-bold mt-1"
                 :class="{
-                  'text-gray-800': !predictionResult,
-                  'text-green-600': predictionResult?.threat_level === 'None' || predictionResult?.threat_level === 'Low',
-                  'text-orange-500': predictionResult?.threat_level === 'Medium',
-                  'text-red-600': predictionResult?.threat_level === 'High',
+                  'text-gray-800': !predictionResult && !isAttackRunning,
+                  'text-green-600': displayThreat === 'None' || displayThreat === 'Low',
+                  'text-orange-500': displayThreat === 'Medium',
+                  'text-red-600': displayThreat === 'High',
                 }"
               >
                 {{ predictionResult?.predicted_label || 'Waiting for input...' }}
               </h3>
+
               <!-- 显示置信度和时间戳 -->
               <div v-if="predictionResult" class="mt-2 text-sm text-gray-600 space-y-1">
                 <div>
-                  <span class="font-semibold">Confidence:</span> 
+                  <span class="font-semibold">Confidence:</span>
                   <span class="font-mono">{{ (predictionResult.confidence * 100).toFixed(2) }}%</span>
                 </div>
                 <div v-if="predictionResult.timestamp">
-                  <span class="font-semibold">Detected at:</span> 
+                  <span class="font-semibold">Detected at:</span>
                   <span class="font-mono">{{ predictionResult.timestamp }}</span>
                 </div>
               </div>
             </div>
-            <span 
+
+            <!-- ✅ Status 改为：攻击运行时用 realtimeLevel，并显示 10s count -->
+            <span
               class="px-4 py-2 rounded-full text-sm font-semibold shadow-sm whitespace-nowrap"
               :class="{
-                'bg-gray-200 text-gray-700': !predictionResult,
-                'bg-green-100 text-green-800': predictionResult?.threat_level === 'None' || predictionResult?.threat_level === 'Low',
-                'bg-orange-100 text-orange-800': predictionResult?.threat_level === 'Medium',
-                'bg-red-100 text-red-800': predictionResult?.threat_level === 'High',
+                'bg-gray-200 text-gray-700': !predictionResult && !isAttackRunning,
+                'bg-green-100 text-green-800': displayThreat === 'None' || displayThreat === 'Low',
+                'bg-orange-100 text-orange-800': displayThreat === 'Medium',
+                'bg-red-100 text-red-800': displayThreat === 'High',
               }"
             >
-              Status: {{ predictionResult?.threat_level || 'Idle' }}
+              Status: {{ displayThreat }}
+              <span v-if="isAttackRunning" class="ml-2 text-xs opacity-70">(10s: {{ realtimeCount }})</span>
             </span>
           </div>
+
           <!-- 概率分布分析 -->
           <div v-if="predictionResult?.probabilities && Object.keys(predictionResult.probabilities).length > 1" class="mt-4 pt-4 border-t border-gray-200">
             <h6 class="text-gray-500 text-xs uppercase font-bold mb-2">Probability Distribution:</h6>
@@ -232,7 +378,7 @@ onMounted(() => {
               <div v-for="(prob, label) in predictionResult.probabilities" :key="label" class="flex items-center gap-3">
                 <span class="text-xs font-medium w-36 truncate" :title="label">{{ label }}</span>
                 <div class="flex-1 bg-gray-200 rounded-full h-3">
-                  <div 
+                  <div
                     class="h-3 rounded-full transition-all"
                     :class="{
                       'bg-green-500': predictionResult.predicted_label === label && predictionResult.threat_level === 'None',
@@ -258,11 +404,11 @@ onMounted(() => {
             <div v-for="log in logs" :key="log.id" class="mb-3 pb-2 border-b border-gray-200 last:border-b-0" :class="log.type === 'success' ? 'text-green-600' : (log.type === 'info' ? 'text-gray-500' : 'text-red-600')">
               <!-- 主要信息行 -->
               <div class="mb-1">
-                <span class="opacity-70">[{{ log.timestamp }}]</span> 
+                <span class="opacity-70">[{{ log.timestamp }}]</span>
                 <span v-html="log.message"></span>
                 <b v-if="log.label">{{ log.label }}</b>
                 <span v-if="log.confidence" class="ml-1 opacity-80">{{ log.confidence }}</span>
-                <span v-if="log.threat_level" class="ml-2 px-2 py-0.5 rounded text-xs font-semibold" 
+                <span v-if="log.threat_level" class="ml-2 px-2 py-0.5 rounded text-xs font-semibold"
                   :class="{
                     'bg-green-100 text-green-800': log.threat_level === 'None' || log.threat_level === 'Low',
                     'bg-orange-100 text-orange-800': log.threat_level === 'Medium',
@@ -295,13 +441,13 @@ onMounted(() => {
           </h5>
           <div class="mb-3">
             <label class="block text-gray-500 text-xs font-bold uppercase mb-1">Upload CSV Dataset:</label>
-            <input 
-              type="file" 
+            <input
+              type="file"
               ref="fileInput"
               class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-gray-700 file:text-white hover:file:bg-gray-800 cursor-pointer border border-gray-300 rounded"
             >
           </div>
-          <button 
+          <button
             @click="handleRetrain"
             :disabled="isRetraining"
             class="w-full py-2 px-4 border border-primary text-primary hover:bg-primary hover:text-white rounded transition-colors duration-300 text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -320,3 +466,4 @@ onMounted(() => {
     </div>
   </div>
 </template>
+
