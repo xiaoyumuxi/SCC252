@@ -19,7 +19,7 @@ const initChart = () => {
   chartInstance = new Chart(ctx, {
     type: 'radar',
     data: {
-      labels: ['Accuracy', 'Precision', 'Recall', 'F1', 'AUC'],
+      labels: ['Accuracy', 'Precision', 'Recall', 'FPR', 'AUC'],
       datasets: [{
         label: 'Current Model',
         data: [0, 0, 0, 0, 0], 
@@ -32,6 +32,8 @@ const initChart = () => {
       }]
     },
     options: {
+      responsive: true,
+      maintainAspectRatio: true,
       scales: {
         r: {
           angleLines: { color: 'rgba(0, 0, 0, 0.1)' },
@@ -56,7 +58,7 @@ const updateChart = (metrics: PerformanceMetrics) => {
     metrics.accuracy,
     metrics.precision,
     metrics.recall,
-    metrics.f1_score,
+    metrics.FPR,  // Changed from f1_score to FPR
     metrics.auc || 0.95 // Fallback if AUC missing
   ];
   chartInstance.update();
@@ -74,9 +76,9 @@ watch(() => props.data, (newData) => {
 </script>
 
 <template>
-  <div class="bg-white border border-gray-200 shadow-sm rounded-lg p-5">
+  <div class="bg-white border border-gray-200 shadow-sm rounded-lg p-5 h-full flex flex-col">
     <h6 class="text-gray-500 text-center text-xs font-bold uppercase mb-4 tracking-wider">Model Performance</h6>
-    <div class="relative w-full aspect-square max-h-[300px] mx-auto">
+    <div class="relative flex-1 w-full">
       <canvas ref="chartCanvas"></canvas>
     </div>
   </div>

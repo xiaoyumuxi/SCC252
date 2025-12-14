@@ -100,7 +100,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="w-full min-h-screen p-6">
+  <div class="w-full min-h-screen p-6 flex flex-col">
     <!-- Header -->
     <header class="flex flex-col md:flex-row justify-between items-center mb-6 pb-4 border-b border-gray-300">
       <div class="mb-4 md:mb-0 text-center md:text-left">
@@ -135,14 +135,14 @@ onMounted(() => {
         :is-loading="isLoadingPerf" 
       />
       <StatCard 
-        title="F1 Score" 
-        :value="performanceData?.f1_score" 
-        color-class="text-gray-700" 
+        title="FPR" 
+        :value="performanceData?.FPR" 
+        color-class="text-red-600" 
         :is-loading="isLoadingPerf" 
       />
     </div>
 
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1">
       <!-- Left: Simulator Controls -->
       <div class="lg:col-span-3">
         <div class="bg-white border border-gray-200 shadow-sm rounded-lg p-5 h-full">
@@ -182,7 +182,7 @@ onMounted(() => {
       </div>
 
       <!-- Center: Results & Logs -->
-      <div class="lg:col-span-6 flex flex-col gap-4">
+      <div class="lg:col-span-6 flex flex-col gap-4 min-h-0">
         <!-- Result Card -->
         <div class="bg-white border border-gray-200 shadow-sm rounded-lg p-5">
           <div class="flex justify-between items-center">
@@ -215,11 +215,11 @@ onMounted(() => {
         </div>
 
         <!-- Log Console -->
-        <div class="bg-white border border-gray-200 shadow-sm rounded-lg p-5 flex-1 flex flex-col">
+        <div class="bg-white border border-gray-200 shadow-sm rounded-lg p-5 flex-1 flex flex-col min-h-0">
           <h5 class="text-gray-800 border-b border-gray-200 pb-2 mb-2 font-bold flex items-center gap-2">
             <i class="fas fa-terminal text-primary"></i> Live Threat Logs
           </h5>
-          <div class="bg-gray-50 border border-gray-200 rounded p-4 h-64 overflow-y-auto font-mono text-sm">
+          <div class="bg-gray-50 border border-gray-200 rounded p-4 flex-1 overflow-y-auto font-mono text-sm">
             <div v-for="log in logs" :key="log.id" class="mb-1" :class="log.type === 'success' ? 'text-green-600' : (log.type === 'info' ? 'text-gray-500' : 'text-red-600')">
               <span class="opacity-70">[{{ log.timestamp }}]</span> 
               <span v-html="log.message"></span>
@@ -257,7 +257,9 @@ onMounted(() => {
         </div>
 
         <!-- Radar Chart -->
-        <RadarChart :data="performanceData" />
+        <div class="flex-1 min-h-0">
+          <RadarChart :data="performanceData" />
+        </div>
       </div>
     </div>
   </div>

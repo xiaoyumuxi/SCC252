@@ -2,7 +2,7 @@ export interface PerformanceMetrics {
   accuracy: number;
   precision: number;
   recall: number;
-  f1_score: number;
+  FPR: number;  // False Positive Rate instead of f1_score
   auc: number;
 }
 

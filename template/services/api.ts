@@ -1,5 +1,6 @@
 import { PerformanceMetrics, PredictionResult, TrafficData } from '../types';
 
+const API_BASE_URL = 'http://127.0.0.1:5050';
 const TIMEOUT_MS = 8000;
 
 async function fetchWithTimeout(resource: string, options: RequestInit = {}): Promise<Response> {
@@ -11,7 +12,8 @@ async function fetchWithTimeout(resource: string, options: RequestInit = {}): Pr
   // we primarily rely on our timeout controller.
   
   try {
-    const response = await fetch(resource, {
+    const url = resource.startsWith('http') ? resource : `${API_BASE_URL}${resource}`;
+    const response = await fetch(url, {
       ...rest,
       signal: controller.signal
     });
@@ -27,13 +29,27 @@ export const api = {
   async getPerformance(): Promise<PerformanceMetrics> {
     const res = await fetchWithTimeout('/api/performance', { method: 'GET' });
     if (!res.ok) throw new Error("Server offline");
-    return res.json();
+    const data = await res.json();
+    // Convert string values to numbers if needed (backend may return strings)
+    return {
+      accuracy: typeof data.accuracy === 'string' ? parseFloat(data.accuracy) : data.accuracy,
+      precision: typeof data.precision === 'string' ? parseFloat(data.precision) : data.precision,
+      recall: typeof data.recall === 'string' ? parseFloat(data.recall) : data.recall,
+      FPR: typeof data.FPR === 'string' ? parseFloat(data.FPR) : data.FPR,
+      auc: typeof data.auc === 'string' ? parseFloat(data.auc) : data.auc
+    };
   },
 
   async getTrafficData(type: 'normal' | 'attack' | 'random'): Promise<TrafficData> {
     let url = '/api/random';
-    if (type === 'normal') url = '/api/sample';
-    if (type === 'attack') url = '/api/simulate-attack';
+    if (type === 'normal') {
+      // For normal traffic, use random data (backend doesn't have dedicated normal endpoint)
+      url = '/api/random';
+    }
+    if (type === 'attack') {
+      // Use the /api/stream endpoint for real attack samples
+      url = '/api/stream';
+    }
     
     const res = await fetchWithTimeout(url);
     if (!res.ok) throw new Error("Failed to generate traffic data");
@@ -59,7 +75,7 @@ export const api = {
     const id = setTimeout(() => controller.abort(), 30000);
 
     try {
-      const res = await fetch('/api/upload-and-retrain', {
+      const res = await fetch(`${API_BASE_URL}/api/upload-and-retrain`, {
         method: 'POST',
         body: formData,
         signal: controller.signal

@@ -656,6 +656,6 @@ if __name__ == '__main__':
     # 启动时加载模型
     if not load_model_components():
         logger.warning("⚠️ Warning: Model components could not be loaded at startup.")
-        logger.warning("   Please ensure 'trainning.py' has been run and generated files in './models/'.")
+        logger.warning("   Please ensure 'trainning.py' has been run and generated files in './models/.")
 
-    app.run(host='127.0.0.1', port=5000, debug=True)
+    app.run(host='127.0.0.1', port=5050, debug=True)
