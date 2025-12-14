@@ -309,7 +309,7 @@ def train_model_with_data(df, target_column='Label'):
         字典 {'success': True/False, 'message': str, 'stats': dict}
         stats 包含: total_samples, label_distribution, new_labels_count
     """
-    global PERFORMANCE_METRICS
+    global PERFORMANCE_METRICS, MODEL, SCALER, LE, FEATURE_COLUMNS
 
     try:
         logger.info("Starting retraining process...")
@@ -375,31 +375,45 @@ def train_model_with_data(df, target_column='Label'):
 
         # 2. 对真实标签进行二值化 (One-Hot 编码) 以适应 OvR 策略
         classes = np.unique(y_test)
-        y_test_binarized = label_binarize(y_test, classes=classes)
+        n_classes = len(classes)
+        
+        # 处理二分类和多分类的情况
+        if n_classes == 2:
+            # 二分类：直接使用 roc_auc_score
+            from sklearn.metrics import roc_auc_score
+            # 使用正类（索引1）的概率计算AUC
+            auc_weighted = roc_auc_score(y_test, y_scores[:, 1])
+        else:
+            # 多分类：使用 OvR 策略
+            y_test_binarized = label_binarize(y_test, classes=classes)
+            
+            # 修复：确保 y_test_binarized 是 2D 数组
+            if y_test_binarized.ndim == 1:
+                y_test_binarized = y_test_binarized.reshape(-1, 1)
 
-        # 3. 获取每个类别的支持度 (样本数), 用于计算加权平均
-        support = y_test.value_counts().sort_index().values
-        total_support = np.sum(support)
+            # 3. 获取每个类别的支持度 (样本数), 用于计算加权平均
+            support = y_test.value_counts().sort_index().values
+            total_support = np.sum(support)
 
-        roc_auc = dict()
-        weighted_auc_sum = 0
+            roc_auc = dict()
+            weighted_auc_sum = 0
 
-        for i in range(len(classes)):
-            # OvR 策略：计算每个类别的 AUC
-            fpr, tpr, _ = roc_curve(y_test_binarized[:, i], y_scores[:, i])
-            roc_auc[i] = auc(fpr, tpr)
+            for i in range(n_classes):
+                # OvR 策略：计算每个类别的 AUC
+                fpr, tpr, _ = roc_curve(y_test_binarized[:, i], y_scores[:, i])
+                roc_auc[i] = auc(fpr, tpr)
 
-            # 计算加权和
-            weight = support[i] / total_support
-            weighted_auc_sum += roc_auc[i] * weight
+                # 计算加权和
+                weight = support[i] / total_support
+                weighted_auc_sum += roc_auc[i] * weight
 
-        auc_weighted = weighted_auc_sum
+            auc_weighted = weighted_auc_sum
 
         PERFORMANCE_METRICS = {
             "accuracy": accuracy_score(y_test, y_pred),
             "precision": precision_score(y_test, y_pred, average='weighted', zero_division=0),
             "recall": recall_score(y_test, y_pred, average='weighted', zero_division=0),
-            "FPR": 1.0 - recall_score(y_test, y_pred, average=None, zero_division=0)[0],
+            "FPR": 1.0 - recall_score(y_test, y_pred, average='macro', zero_division=0),  # 使用 macro 平均
             "auc": auc_weighted
         }
 
@@ -413,8 +427,15 @@ def train_model_with_data(df, target_column='Label'):
         logger.info(f"Retraining complete. Accuracy: {PERFORMANCE_METRICS['accuracy']:.4f}")
         # 保存性能指标
         with open(PERFORMANCE_PATH, 'w') as f:
-            json.dump(PERFORMANCE_METRICS, f)
+            json.dump({k: str(v) if isinstance(v, (np.float64, np.float32)) else v for k, v in PERFORMANCE_METRICS.items()}, f)
         logger.info(f"Performance metrics saved to {PERFORMANCE_PATH}")
+
+        # 9. 更新全局变量，使新模型立即生效
+        MODEL = rf_model
+        SCALER = scaler
+        LE = le
+        FEATURE_COLUMNS = feature_columns_list
+        logger.info("Global model components updated with newly trained model.")
 
         return {'success': True, 'message': f'Retraining complete. Accuracy: {PERFORMANCE_METRICS["accuracy"]:.4f}', 'stats': stats}
 
