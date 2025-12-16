@@ -1,145 +1,148 @@
+import os
+import json
 import joblib
 import pandas as pd
 import numpy as np
-import json
+
 from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler, LabelEncoder, label_binarize
-from sklearn.metrics import classification_report, accuracy_score, f1_score, precision_score, recall_score, roc_curve, auc
-# 设置文件路径
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    roc_curve,
+    auc,
+    classification_report
+)
+
+# Set dataset path
 file_path = './data/Wednesday-workingHours.pcap_ISCX.csv'
 
-print("正在读取数据...")
+print("Reading dataset...")
 
-# 1. 读取 CSV 文件
+# 1) Read CSV file
 try:
     df = pd.read_csv(file_path)
-    print(f"数据读取成功，原始形状: {df.shape}")
+    print(f"Loaded successfully. Raw shape: {df.shape}")
 except FileNotFoundError:
-    print("错误：未找到文件，请检查文件路径。")
-    exit()
+    print("Error: File not found. Please check the file path.")
+    raise SystemExit(1)
 
-# --- 数据清理预备步骤 ---
+# --- Data cleaning prep ---
 df.columns = df.columns.str.strip()
 
-# 2. 清理数据 (删除包含 NaN 或 Infinity 的行)
-print("正在清理数据...")
+# 2) Clean data (drop rows containing NaN or Infinity)
+print("Cleaning data...")
 
-# 将无穷大 (inf) 和负无穷大 (-inf) 替换为 NaN (空值)
+# Replace +inf/-inf with NaN
 df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
-# 删除包含 NaN 的行
+# Drop rows containing NaN
 df.dropna(inplace=True)
 
-print(f"清理后形状: {df.shape}")
+print(f"After cleaning, shape: {df.shape}")
 
-# --- 多分类标签编码 ---
-print("正在进行多分类标签编码...")
+# --- Multi-class label encoding ---
+print("Encoding labels...")
 
-# 查看一下原始的标签都有哪些
-print("原始标签类别:", df['Label'].unique())
+# Show original label classes
+print("Original label classes:", df['Label'].unique())
 
-# 3. 使用 LabelEncoder 将字符串标签转换为 0, 1, 2, 3...
+# 3) Encode string labels to 0,1,2,3...
 le = LabelEncoder()
-df['Label'] = le.fit_transform(df['Label'])
+df['Label'] = le.fit_transform(df['Label'].astype(str))
 
-# 保存映射关系
+# Save label mapping
 label_mapping = dict(zip(le.classes_, le.transform(le.classes_)))
-print("\n标签映射关系:")
+print("\nLabel mapping:")
 for label, num in label_mapping.items():
     print(f"  {label} -> {num}")
 
-# 查看编码后的分布
-print("\n编码后的标签分布:")
+# Show encoded label distribution
+print("\nEncoded label distribution:")
 print(df['Label'].value_counts())
 
-# 4. 分离特征 (X) 和 标签 (y)
+# 4) Split features (X) and labels (y)
 y = df['Label']
 X = df.drop('Label', axis=1)
 
 FEATURE_COLUMNS = X.columns.tolist()
 
-# 5. 划分训练集和测试集
-print("\n正在划分训练集和测试集 (Stratified)...")
+# 5) Train/test split (stratified)
+print("\nSplitting train/test sets (stratified)...")
 X_train, X_test, y_train, y_test = train_test_split(
     X, y,
     test_size=0.2,
     random_state=42,
-    stratify=y  # 保证切分后的类别比例与原始数据一致
+    stratify=y
 )
 
-# 6. 特征缩放 (StandardScaler)
-print("正在进行特征标准化...")
+# 6) Feature scaling (StandardScaler)
+print("Standardizing features...")
 scaler = StandardScaler()
 X_train = scaler.fit_transform(X_train)
 X_test = scaler.transform(X_test)
 
-print("\n多分类预处理完成！")
-print("特征标准化完成。")
+print("Preprocessing complete.")
 
-# --- 5. 模型训练 ---
-print("\n--- 步骤 5: 训练随机森林分类器 (Random Forest) ---")
+# --- 5) Model training ---
+print("\n--- Step 5: Training Random Forest classifier ---")
 
-# 实例化模型-随机森林 - 使用 RandomForestClassifier
-# n_estimators=100 表示使用 100 棵决策树
+# Initialize RandomForestClassifier
 rf_model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
 
-# 在缩放后的训练数据上进行训练
+# Train
 rf_model.fit(X_train, y_train)
 
-print("模型训练完成。")
+print("Training complete.")
 
-# --- 6. 模型评估 ---
-print("\n--- 步骤 6: 模型评估 ---")
+# --- 6) Model evaluation ---
+print("\n--- Step 6: Evaluating model ---")
 
-# 使用测试集进行预测
+# Predict
 y_pred = rf_model.predict(X_test)
 accuracy = accuracy_score(y_test, y_pred)
-# 使用 weighted average 以适应多分类和可能的不平衡数据
+
 precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
 recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
-# 将 0 视为负类 (Negative)，1 视为正类 (Positive)
-# TNR (特异度) 是模型正确预测负类的能力，相当于负类的召回率
+
+# FPR using class-0 recall as TNR (kept as your original logic)
 recalls = recall_score(y_test, y_pred, average=None, zero_division=0)
-# 2. 类别 0 的召回率即为特异度 (TNR)
-# 类别 0 对应正常流量 ('BENIGN')，在这里被认定为是假类
 tnr_score = recalls[0]
 FPR = 1.0 - tnr_score
-# 1. 获取模型对测试集的概率输出 (AUC 必需)
+
+# Probabilities for AUC
 y_scores = rf_model.predict_proba(X_test)
 
-# 2. 对真实标签进行二值化 (One-Hot 编码) 以适应 OvR 策略
+# Binarize for OvR AUC
 classes = np.unique(y_test)
 y_test_binarized = label_binarize(y_test, classes=classes)
 
-# 3. 获取每个类别的支持度 (样本数), 用于计算加权平均
+# Weighted AUC by class support
 support = y_test.value_counts().sort_index().values
 total_support = np.sum(support)
 
-roc_auc = dict()
-weighted_auc_sum = 0
+roc_auc = {}
+weighted_auc_sum = 0.0
 
 for i in range(len(classes)):
-    # OvR 策略：计算每个类别的 AUC
     fpr, tpr, _ = roc_curve(y_test_binarized[:, i], y_scores[:, i])
     roc_auc[i] = auc(fpr, tpr)
 
-    # 计算加权和
     weight = support[i] / total_support
     weighted_auc_sum += roc_auc[i] * weight
 
-auc_weighted = weighted_auc_sum
+auc_weighted = float(weighted_auc_sum)
 
-
-# 打印对应的数据集合
-print(f"测试集整体准确率: {accuracy:.4f}")
-print(f"测试集整体精确度: {precision:.4f}")
+print(f"Test Accuracy:  {accuracy:.4f}")
+print(f"Test Precision: {precision:.4f}")
 print("---------------------------------")
-print(f"测试集[BENIGN]召回率: {recall:.4f}")
-print(f"测试集假阳性率: {FPR:.4f}")
-print(f"测试集AUC: {auc_weighted:.4f}")
+print(f"Test Recall:    {recall:.4f}")
+print(f"Test FPR:       {FPR:.4f}")
+print(f"Test AUC:       {auc_weighted:.4f}")
 
-# 存入性能指标显示
+# Save performance metrics
 performance_metrics = {
     "accuracy": f"{accuracy:.4f}",
     "precision": f"{precision:.4f}",
@@ -148,29 +151,35 @@ performance_metrics = {
     "auc": f"{auc_weighted:.4f}"
 }
 
+os.makedirs('./models', exist_ok=True)
 metrics_filename = './models/ddos_performance.json'
 with open(metrics_filename, 'w') as f:
     json.dump(performance_metrics, f)
 
-print(f"- 性能指标: {metrics_filename}")
+print(f"Saved metrics to: {metrics_filename}")
 
-# 打印详细的分类报告
-print("\n--- 多分类详细评估报告 ---")
+# Detailed classification report
+print("\n--- Detailed classification report ---")
 print(classification_report(y_test, y_pred, target_names=le.classes_, zero_division=0))
 
-# --- 7. 模型和预处理器保存 ---
-print("\n--- 步骤 7: 模型和预处理器保存 ---")
+# --- 7) Save model and preprocessors ---
+print("\n--- Step 7: Saving model and preprocessors ---")
 
 model_filename = './models/ddos_rf_model.joblib'
 scaler_filename = './models/ddos_scaler.joblib'
 encoder_filename = './models/ddos_label_encoder.joblib'
-feature_col = './models/ddos_feature_columns.joblib'
+feature_col_filename = './models/ddos_feature_columns.joblib'
 
-# 使用 joblib 保存训练好的模型 (rf_model) 和预处理器
 joblib.dump(rf_model, model_filename)
 joblib.dump(scaler, scaler_filename)
 joblib.dump(le, encoder_filename)
-joblib.dump(FEATURE_COLUMNS, feature_col)
+joblib.dump(FEATURE_COLUMNS, feature_col_filename)
 
-print(f"🎉 任务完成！")
-print(f"模型和预处理器已保存为:\n- 模型: {model_filename} (内容为随机森林)\n- 缩放器: {scaler_filename}\n- 编码器: {encoder_filename}\n- 特征行列: {feature_col}")
+print("Done.")
+print(
+    "Saved artifacts:\n"
+    f"- Model:          {model_filename}\n"
+    f"- Scaler:         {scaler_filename}\n"
+    f"- Label encoder:  {encoder_filename}\n"
+    f"- Feature columns:{feature_col_filename}"
+)

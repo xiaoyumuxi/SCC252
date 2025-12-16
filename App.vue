@@ -249,7 +249,6 @@ onMounted(() => {
 
 <template>
   <div class="w-full min-h-screen p-6 flex flex-col">
-    <!-- Header -->
     <header class="flex flex-col md:flex-row justify-between items-center mb-6 pb-4 border-b border-gray-300">
       <div class="mb-4 md:mb-0 text-center md:text-left">
         <h2 class="text-3xl font-bold text-primary flex items-center gap-2">
@@ -262,7 +261,6 @@ onMounted(() => {
       </span>
     </header>
 
-    <!-- Top Stats Row -->
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
       <StatCard
         title="Accuracy"
@@ -291,7 +289,6 @@ onMounted(() => {
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1">
-      <!-- Left: Simulator Controls -->
       <div class="lg:col-span-3">
         <div class="bg-white border border-gray-200 shadow-sm rounded-lg p-5 h-full">
           <h5 class="text-gray-800 border-b border-gray-200 pb-2 mb-4 font-bold flex items-center gap-2">
@@ -308,13 +305,6 @@ onMounted(() => {
               <i class="fas fa-check-circle"></i> Normal Traffic
             </button>
             <button
-              @click="simulateTraffic('random')"
-              :disabled="isAnalyzing"
-              class="w-full py-2.5 px-4 bg-white border border-orange-400 text-orange-500 font-semibold uppercase tracking-wide hover:bg-orange-400 hover:text-white transition-colors duration-300 rounded disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-            >
-              <i class="fas fa-search-location"></i> PortScan Test
-            </button>
-            <button
               @click="simulateTraffic('attack')"
               :disabled="isAnalyzing"
               class="w-full py-2.5 px-4 bg-white border border-red-500 text-red-500 font-semibold uppercase tracking-wide hover:bg-red-500 hover:text-white transition-colors duration-300 rounded disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
@@ -329,9 +319,7 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- Center: Results & Logs -->
       <div class="lg:col-span-6 flex flex-col gap-4 min-h-0">
-        <!-- Result Card -->
         <div class="bg-white border border-gray-200 shadow-sm rounded-lg p-5">
           <div class="flex justify-between items-start">
             <div class="flex-1">
@@ -374,7 +362,6 @@ onMounted(() => {
             </span>
           </div>
 
-          <!-- 概率分布分析 -->
           <div v-if="predictionResult?.probabilities && Object.keys(predictionResult.probabilities).length > 1" class="mt-4 pt-4 border-t border-gray-200">
             <h6 class="text-gray-500 text-xs uppercase font-bold mb-2">Probability Distribution:</h6>
             <div class="space-y-2">
@@ -398,7 +385,6 @@ onMounted(() => {
           </div>
         </div>
 
-        <!-- Log Console -->
         <div class="bg-white border border-gray-200 shadow-sm rounded-lg p-5 flex-1 flex flex-col min-h-0">
           <h5 class="text-gray-800 border-b border-gray-200 pb-2 mb-2 font-bold flex items-center gap-2">
             <i class="fas fa-terminal text-primary"></i> Live Threat Logs
@@ -434,7 +420,6 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- Right: Retrain & Chart -->
       <div class="lg:col-span-3 flex flex-col gap-4 h-full">
         <div class="bg-white border border-gray-200 shadow-sm rounded-lg p-5">
           <h5 class="text-gray-800 border-b border-gray-200 pb-2 mb-3 font-bold flex items-center gap-2">

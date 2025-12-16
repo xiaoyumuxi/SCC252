@@ -14,51 +14,51 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, LabelEncoder, label_binarize
 
-# --- 配置部分 ---
-# 设置日志
+# --- Configuration ---
+# Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 创建 Flask 应用
+# Create Flask app
 app = Flask(__name__)
-CORS(app)  # 允许跨域请求
+CORS(app)  # Allow cross-origin requests
 
-# 配置
-app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 上传最大 500MB
-MAX_ALERTS = 50  # 内存中保存的最大警报数量
+# App config
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # Max upload size: 500MB
+MAX_ALERTS = 50  # Max number of alerts stored in memory
 DB_FILE = 'ddos_detection.db'
 
-# 全局变量 (模型组件)
+# Global variables (model components)
 MODEL = None
 SCALER = None
 LE = None
 FEATURE_COLUMNS = None
 
-# 模型文件路径 (与 trainning.py 保持一致)
+# Model file paths (consistent with trainning.py)
 MODEL_PATH = './models/ddos_rf_model.joblib'
 SCALER_PATH = './models/ddos_scaler.joblib'
 ENCODER_PATH = './models/ddos_label_encoder.joblib'
 FEATURE_COLS_PATH = './models/ddos_feature_columns.joblib'
 PERFORMANCE_PATH = './models/ddos_performance.json'
 
-# 内存存储 (警报)
+# In-memory storage (alerts)
 alerts = []
 alerts_lock = Lock()
 
-# 攻击样本库（用于 /api/stream 模拟攻击）
+# Attack sample library (used by /api/stream to simulate attack traffic)
 ATTACK_SAMPLE_LIBRARY = []          # [{'label': 'DoS Hulk', 'features': [...]}, ...]
 attack_samples_lock = Lock()
 
-# 从原始数据集中抽样构建攻击样本库的路径
+# Path to sample attack data from the raw dataset
 ATTACK_DATASET_PATH = os.getenv(
     'ATTACK_DATASET_PATH',
     './data/Wednesday-workingHours.pcap_ISCX.csv'
 )
 
-# 频率统计时间窗（秒）
+# Frequency counting time window (seconds)
 TIME_WINDOW_SECONDS = 10
 
-# 性能指标 (示例初始值，训练后会更新)
+# Performance metrics (initial example values; updated after training)
 PERFORMANCE_METRICS = {
     "accuracy": 0.0,
     "precision": 0.0,
@@ -69,13 +69,13 @@ PERFORMANCE_METRICS = {
 
 
 # ----------------------------------------------------------------------
-# 1. 数据库初始化
+# 1. Database initialization
 # ----------------------------------------------------------------------
 def init_db():
     try:
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
-        # 修复：添加 features_count 列，防止 INSERT 时报错
+        # Fix: Add features_count column to prevent INSERT errors
         c.execute('''CREATE TABLE IF NOT EXISTS detection_history
                      (
                          id INTEGER PRIMARY KEY AUTOINCREMENT,timestamp TEXT NOT NULL,predicted_label TEXT NOT NULL,confidence REAL NOT NULL,threat_level TEXT NOT NULL,features_count INTEGER
@@ -91,16 +91,16 @@ init_db()
 
 
 # ----------------------------------------------------------------------
-# 2. 模型加载逻辑
+# 2. Model loading logic
 # ----------------------------------------------------------------------
 def load_model_components():
     """
-    加载所有保存的模型组件
+    Load all saved model components.
     """
     global MODEL, SCALER, LE, FEATURE_COLUMNS, PERFORMANCE_METRICS
 
     try:
-        # 1. 加载模型二进制文件
+        # 1. Load model binary files
         if not all(os.path.exists(p) for p in [MODEL_PATH, SCALER_PATH, ENCODER_PATH, FEATURE_COLS_PATH]):
             logger.warning("One or more model binary files not found.")
             return False
@@ -110,30 +110,30 @@ def load_model_components():
         LE = joblib.load(ENCODER_PATH)
         FEATURE_COLUMNS = joblib.load(FEATURE_COLS_PATH)
 
-        # 2. 加载性能指标 (新增逻辑)
+        # 2. Load performance metrics (additional logic)
         if os.path.exists(PERFORMANCE_PATH):
             try:
                 with open(PERFORMANCE_PATH, 'r') as f:
                     PERFORMANCE_METRICS = json.load(f)
-                logger.info("✅ Performance metrics loaded.")
+                logger.info("Performance metrics loaded.")
             except Exception as e:
-                logger.warning(f"⚠️ Found metrics file but failed to load: {e}")
+                logger.warning(f"Found metrics file but failed to load: {e}")
         else:
-            logger.warning("⚠️ No performance metrics file found (ddos_performance.json). Metrics will be 0.")
+            logger.warning("No performance metrics file found (ddos_performance.json). Metrics will be 0.")
 
-        logger.info("✅ Model components loaded successfully.")
+        logger.info("Model components loaded successfully.")
         return True
     except Exception as e:
-        logger.error(f"❌ Error loading model files: {e}")
+        logger.error(f"Error loading model files: {e}")
         return False
 
 
 # ----------------------------------------------------------------------
-# 3. 核心预测与辅助函数
+# 3. Core prediction logic and helper functions
 # ----------------------------------------------------------------------
 def get_threat_level(label, confidence):
-    # todo: 这一部分需要重写逻辑
-    """根据标签和置信度确定威胁等级"""
+    # TODO: This part needs a rewritten logic
+    """Determine threat level based on label and confidence."""
     if label.upper() == 'BENIGN':
         return 'None'
     elif confidence > 0.9:
@@ -146,12 +146,12 @@ def get_threat_level(label, confidence):
 
 def predict(raw_input_data):
     """
-    核心预测逻辑，与 api.py 保持一致
+    Core prediction logic (kept consistent with api.py).
     """
     if not FEATURE_COLUMNS:
         return {"status": "error", "message": "Model not loaded."}
 
-    # 1. 检查特征数量
+    # 1. Check feature length
     if len(raw_input_data) != len(FEATURE_COLUMNS):
         return {
             "status": "error",
@@ -159,35 +159,35 @@ def predict(raw_input_data):
         }
 
     try:
-        # 2. 转换为 DataFrame (使用保存的列名)
+        # 2. Convert to DataFrame (using saved column names)
         new_df = pd.DataFrame([raw_input_data], columns=FEATURE_COLUMNS)
 
-        # 3. 数据清理 (替换 Inf/NaN 为 0，确保健壮性)
+        # 3. Data cleaning (replace Inf/NaN with 0 to ensure robustness)
         new_df.replace([np.inf, -np.inf], np.nan, inplace=True)
         new_df.fillna(0, inplace=True)
 
-        # 4. 特征缩放
+        # 4. Feature scaling
         data_scaled = SCALER.transform(new_df)
 
-        # 5. 预测
-        # 使用 NumPy 数组（而非带列名的 DataFrame）传入模型，避免 scikit-learn 关于
-        # "X has feature names, but RandomForestClassifier was fitted without feature names" 的警告。
+        # 5. Predict
+        # Pass NumPy array (not a DataFrame with feature names) to avoid scikit-learn warning:
+        # "X has feature names, but RandomForestClassifier was fitted without feature names"
         prediction_encoded = MODEL.predict(data_scaled)[0]
         prediction_proba = MODEL.predict_proba(data_scaled)[0]
 
-        # 6. 解析结果
+        # 6. Parse results
         prediction_label = LE.inverse_transform([prediction_encoded])[0]
         max_proba = np.max(prediction_proba)
         threat_level = get_threat_level(prediction_label, max_proba)
 
-        # 获取所有类别的概率分布（前5个最高概率）
+        # Get probability distribution (top 5 probabilities above 1%)
         proba_dict = {}
         classes = LE.classes_
         for i, prob in enumerate(prediction_proba):
-            if prob > 0.01:  # 只显示概率大于1%的
+            if prob > 0.01:  # Only show probabilities > 1%
                 proba_dict[classes[i]] = float(prob)
-        
-        # 按概率降序排序，取前5个
+
+        # Sort by probability descending, take top 5
         top_probabilities = dict(sorted(proba_dict.items(), key=lambda x: x[1], reverse=True)[:5])
 
         return {
@@ -196,8 +196,8 @@ def predict(raw_input_data):
             "confidence": float(max_proba),
             "encoded_value": int(prediction_encoded),
             "threat_level": threat_level,
-            "probabilities": top_probabilities,  # 所有类别的概率分布
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # 添加时间戳
+            "probabilities": top_probabilities,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
     except Exception as e:
         logger.error(f"Prediction logic error: {e}")
@@ -206,10 +206,10 @@ def predict(raw_input_data):
 
 def get_prediction(raw_input_data):
     """
-    兼容性包装器：确保在调用预测前模型组件已加载。
-    返回与原 `predict` 相同的字典结构。
+    Compatibility wrapper: ensures model components are loaded before predicting.
+    Returns the same dict structure as `predict`.
     """
-    # 如果模型或组件尚未加载，尝试加载一次
+    # If model/components not loaded, try loading once
     if not all([MODEL, SCALER, LE, FEATURE_COLUMNS]):
         loaded = load_model_components()
         if not loaded:
@@ -219,24 +219,25 @@ def get_prediction(raw_input_data):
 
 def build_attack_sample_library():
     """
-    从原始数据集中，为每种攻击类型采样最多 5 条，构建攻击样本库。
-    只使用 FEATURE_COLUMNS 中定义的特征，保证与模型输入一致。
+    Build an attack sample library from the raw dataset:
+    - Sample up to 5 rows per attack label
+    - Use only FEATURE_COLUMNS to match model input format
     """
     global ATTACK_SAMPLE_LIBRARY
 
     with attack_samples_lock:
-        # 已经构建过就直接返回
+        # If already built, return directly
         if ATTACK_SAMPLE_LIBRARY:
             return True
 
-        # 确保模型组件已加载，从而拿到 FEATURE_COLUMNS
+        # Ensure model components are loaded to get FEATURE_COLUMNS
         if not FEATURE_COLUMNS:
             loaded = load_model_components()
             if not loaded or not FEATURE_COLUMNS:
                 logger.error("Cannot build attack sample library: FEATURE_COLUMNS not available.")
                 return False
 
-        # 检查数据集路径
+        # Validate dataset path
         if not os.path.exists(ATTACK_DATASET_PATH):
             logger.error(f"Attack dataset file not found: {ATTACK_DATASET_PATH}")
             return False
@@ -245,7 +246,7 @@ def build_attack_sample_library():
             logger.info(f"Loading attack dataset from {ATTACK_DATASET_PATH} ...")
             df = pd.read_csv(ATTACK_DATASET_PATH)
 
-            # 列名去空格，基础清洗
+            # Strip column names and basic cleanup
             df.columns = df.columns.str.strip()
             if 'Label' not in df.columns:
                 logger.error("Dataset has no 'Label' column.")
@@ -254,7 +255,7 @@ def build_attack_sample_library():
             df.replace([np.inf, -np.inf], np.nan, inplace=True)
             df.dropna(inplace=True)
 
-            # 过滤出攻击行（排除 BENIGN）
+            # Filter attack rows (exclude BENIGN)
             df['Label'] = df['Label'].astype(str).str.strip()
             attack_df = df[df['Label'].str.upper() != 'BENIGN']
 
@@ -264,7 +265,7 @@ def build_attack_sample_library():
 
             library = []
 
-            # 按攻击类型分组，每类最多 5 条
+            # Group by attack label, sample up to 5 per label
             for label, group in attack_df.groupby('Label'):
                 sample_n = min(5, len(group))
                 sampled = group.sample(n=sample_n, random_state=42)
@@ -299,39 +300,39 @@ def build_attack_sample_library():
             return False
 
 # ----------------------------------------------------------------------
-# 4. 模型重训练逻辑
+# 4. Model retraining logic
 # ----------------------------------------------------------------------
 def train_model_with_data(df, target_column='Label'):
     """
-    使用上传的数据重新训练模型。
+    Retrain the model using uploaded data.
 
-    返回值:
-        字典 {'success': True/False, 'message': str, 'stats': dict}
-        stats 包含: total_samples, label_distribution, new_labels_count
+    Returns:
+        dict {'success': True/False, 'message': str, 'stats': dict}
+        stats includes: total_samples, label_distribution, new_labels_count
     """
     global PERFORMANCE_METRICS
 
     try:
         logger.info("Starting retraining process...")
 
-        # 1. 简单清理
-        df.columns = df.columns.str.strip()  # 去除列名空格
+        # 1. Basic cleanup
+        df.columns = df.columns.str.strip()  # Strip column name spaces
 
-        # 检查是否存在 Label 列
+        # Check if target column exists
         if target_column not in df.columns:
             error_msg = f"Target column '{target_column}' not found in CSV. Available columns: {', '.join(df.columns.tolist())}"
             logger.error(error_msg)
             return {'success': False, 'message': error_msg, 'stats': {}}
 
-        # 处理 Inf 和 NaN
+        # Handle Inf and NaN
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
-        df.dropna(inplace=True)  # 这里选择直接丢弃，保证训练质量
+        df.dropna(inplace=True)  # Drop rows with NaN to ensure training quality
 
-        # 2. 标签编码
+        # 2. Label encoding
         le = LabelEncoder()
         df[target_column] = le.fit_transform(df[target_column].astype(str))
 
-        # 收集统计信息
+        # Collect statistics
         unique_labels = set(le.classes_)
         label_dist = df[target_column].value_counts().to_dict()
         old_labels = set(LE.classes_) if LE else set()
@@ -345,48 +346,62 @@ def train_model_with_data(df, target_column='Label'):
         }
         logger.info(f"Data statistics: {stats}")
 
-        # 3. 分离特征和标签
+        # 3 Split features and labels
         X = df.drop(columns=[target_column])
         y = df[target_column]
 
-        feature_columns_list = X.columns.tolist()
+        # (A) Drop duplicates to reduce train/test leakage
+        df2 = pd.concat([X, y], axis=1).drop_duplicates()
+        X = df2.drop(columns=[target_column])
+        y = df2[target_column]
 
-        # 4. 划分数据集
+        # (B) Keep numeric columns only (avoid leakage from IDs/timestamps/IPs)
+        X = X.select_dtypes(include=[np.number])
+
+        # (C) Enforce the same feature columns/order as the currently loaded model (recommended)
+        # This prevents "same length but wrong order" leading to always-BENIGN predictions.
+        if FEATURE_COLUMNS:
+            X = X.reindex(columns=FEATURE_COLUMNS, fill_value=0.0)
+            feature_columns_list = list(FEATURE_COLUMNS)
+        else:
+            feature_columns_list = X.columns.tolist()
+
+        # 4. Train-test split
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=0.2, random_state=42, stratify=y
         )
 
-        # 5. 标准化
+        # 5. Standardization
         scaler = StandardScaler()
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
 
-        # 转换回 DataFrame 格式以保持一致性
+        # Convert back to DataFrame to keep consistent column order
         X_train_scaled = pd.DataFrame(X_train_scaled, columns=feature_columns_list)
         X_test_scaled = pd.DataFrame(X_test_scaled, columns=feature_columns_list)
 
-        # 6. 训练 Random Forest
+        # 6. Train Random Forest
         rf_model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
         rf_model.fit(X_train_scaled, y_train)
 
-        # 7. 评估
+        # 7. Evaluation
         y_pred = rf_model.predict(X_test_scaled)
 
-        # ====== AUC 计算（修复二分类越界问题）======
-        # 1) 获取模型对测试集的概率输出 (AUC 必需)
-        #    ✅ 必须和训练一致：用 X_test_scaled，而不是 X_test
+        # ====== AUC calculation (fix binary-case indexing issue) ======
+        # 1) Probability output for the test set (required for AUC)
+        #    Must match training input: use X_test_scaled (not X_test)
         y_scores = rf_model.predict_proba(X_test_scaled)
 
-        # 2) 类别
+        # 2) Classes
         classes = np.unique(y_test)
         n_classes = len(classes)
 
-        # 3) 计算 AUC（保持你“加权 AUC”的思想）
+        # 3) Weighted AUC
         if n_classes == 2:
-            # 二分类：label_binarize 只返回 (n,1)，不能 [:, i] 循环
+            # Binary: label_binarize returns (n,1), cannot loop over [:, i]
             y_bin = label_binarize(y_test, classes=classes).ravel()  # (n,)
 
-            # predict_proba 二分类一般是 (n,2)，取正类(classes[1])那列
+            # For binary predict_proba is usually (n,2), use positive class column
             if y_scores.ndim == 2 and y_scores.shape[1] >= 2:
                 score_pos = y_scores[:, 1]
             else:
@@ -396,7 +411,7 @@ def train_model_with_data(df, target_column='Label'):
             auc_weighted = float(auc(fpr, tpr))
 
         else:
-            # 多分类：OvR，每类算 AUC，再按支持度加权平均
+            # Multiclass: OvR AUC for each class, weighted by support
             y_test_binarized = label_binarize(y_test, classes=classes)  # (n, n_classes)
 
             support = y_test.value_counts().sort_index().values
@@ -413,7 +428,7 @@ def train_model_with_data(df, target_column='Label'):
                 weighted_auc_sum += roc_auc[i] * weight
 
             auc_weighted = float(weighted_auc_sum)
-        # ====== AUC 计算结束 ======
+        # ====== End AUC calculation ======
 
         PERFORMANCE_METRICS = {
             "accuracy": accuracy_score(y_test, y_pred),
@@ -423,7 +438,7 @@ def train_model_with_data(df, target_column='Label'):
             "auc": auc_weighted
         }
 
-        # 8. 保存所有组件 (覆盖旧文件)
+        # 8. Save all components (overwrite old files)
         os.makedirs('./models', exist_ok=True)
         joblib.dump(rf_model, MODEL_PATH)
         joblib.dump(scaler, SCALER_PATH)
@@ -432,7 +447,7 @@ def train_model_with_data(df, target_column='Label'):
 
         logger.info(f"Retraining complete. Accuracy: {PERFORMANCE_METRICS['accuracy']:.4f}")
 
-        # 保存性能指标
+        # Save performance metrics
         with open(PERFORMANCE_PATH, 'w') as f:
             json.dump(PERFORMANCE_METRICS, f)
         logger.info(f"Performance metrics saved to {PERFORMANCE_PATH}")
@@ -450,12 +465,12 @@ def train_model_with_data(df, target_column='Label'):
         return {'success': False, 'message': str(e), 'stats': {}}
 
 # ----------------------------------------------------------------------
-# 5. API 路由接口
+# 5. API routes
 # ----------------------------------------------------------------------
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """健康检查"""
+    """Health check endpoint."""
     return jsonify({
         "status": "healthy",
         "model_loaded": MODEL is not None
@@ -465,7 +480,7 @@ def health_check():
 @app.route('/api/predict', methods=['POST'])
 def predict_api():
     """
-    预测接口
+    Prediction endpoint.
     POST Body: {"features": [v1, v2, ...]}
     """
     if not all([MODEL, SCALER, LE, FEATURE_COLUMNS]):
@@ -478,11 +493,11 @@ def predict_api():
 
         features = data['features']
 
-        # 调用预测
+        # Run prediction
         result = predict(features)
 
         if result['status'] == 'success':
-            # 保存到数据库
+            # Save to database
             try:
                 conn = sqlite3.connect(DB_FILE)
                 c = conn.cursor()
@@ -498,7 +513,7 @@ def predict_api():
             except Exception as db_e:
                 logger.error(f"Database insert error: {db_e}")
 
-            # 处理警报 (非正常流量)
+            # Handle alerts (non-benign traffic)
             if result['predicted_label'].upper() != 'BENIGN':
                 with alerts_lock:
                     alert = {
@@ -508,7 +523,7 @@ def predict_api():
                         "level": result['threat_level']
                     }
                     alerts.append(alert)
-                    # 修复：使用全局变量 MAX_ALERTS
+                    # Fix: use global MAX_ALERTS
                     if len(alerts) > MAX_ALERTS:
                         alerts.pop(0)
 
@@ -521,14 +536,14 @@ def predict_api():
 
 @app.route('/api/alerts', methods=['GET'])
 def get_alerts():
-    """获取最新警报"""
+    """Get latest alerts."""
     with alerts_lock:
         return jsonify(list(reversed(alerts)))
 
 
 @app.route('/api/history', methods=['GET'])
 def get_history():
-    """获取历史记录"""
+    """Get detection history."""
     try:
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
@@ -543,7 +558,7 @@ def get_history():
                 "timestamp": row[0],
                 "type": row[1],
                 "confidence": row[2],
-                "level": row[3],  # 直接使用 threat_level
+                "level": row[3],
                 "threat_level": row[3]
             })
         return jsonify(history)
@@ -553,21 +568,21 @@ def get_history():
 
 @app.route('/api/performance', methods=['GET'])
 def get_performance():
-    """获取模型性能"""
+    """Get model performance metrics."""
     return jsonify(PERFORMANCE_METRICS)
+
 import random
 import time
 from flask import request, jsonify
 
-# 固定“攻击间隔”
+# Fixed "attack interval" per mode
 MODE_INTERVAL_MS = {
-    "Low": 2000,     # 2秒一次
-    "Medium": 1000,  # 1秒一次
-    "High": 500,     # 0.5秒一次（=1秒两次）
+    "Low": 2000,     # once every 2 seconds
+    "Medium": 1000,  # once every 1 second
+    "High": 500,     # once every 0.5s (= twice per second)
 }
 
-# 前端根据“最近10秒次数”分级用的阈值
-# 10秒内：Low=5次，Medium=10次，High=20次
+# Thresholds used by frontend to map count within last 10 seconds
 LEVEL_THRESHOLDS = {
     "low_max": 5,      # 0~5 => Low
     "medium_max": 10,  # 6~10 => Medium
@@ -581,7 +596,7 @@ def count_to_level(c: int) -> str:
         return "Medium"
     return "High"
 
-# ====== 放在 app.py 顶部 import 附近（如果已有就不用重复）======
+# ====== Place near imports at the top of app.py (if already present, no need to duplicate) ======
 import os
 import random
 import time
@@ -589,7 +604,7 @@ import pandas as pd
 from threading import Lock
 from flask import request, jsonify
 
-# ====== 异常流量 CSV 缓存（新增）======
+# ====== Anomaly traffic CSV cache (added) ======
 ANOMALY_TRAFFIC_DF = None
 ANOMALY_FEATURE_COLS = None
 ANOMALY_LABEL_COL = None
@@ -597,7 +612,8 @@ anomaly_traffic_lock = Lock()
 
 def _resolve_anomaly_csv_path() -> str:
     """
-    兼容不同启动目录：优先按 app.py 所在目录定位 stream/anomaly_traffic.csv
+    Handle different working directories:
+    Prefer locating stream/anomaly_traffic.csv relative to this file.
     """
     candidates = [
         os.path.join(os.path.dirname(__file__), "stream", "anomaly_traffic.csv"),
@@ -607,14 +623,14 @@ def _resolve_anomaly_csv_path() -> str:
     for p in candidates:
         if os.path.exists(p):
             return p
-    return candidates[0]  # 默认返回第一个（用于报错提示）
+    return candidates[0]
 
 def _load_anomaly_traffic():
     """
-    只加载一次 anomaly_traffic.csv，并缓存：
+    Load anomaly_traffic.csv once and cache:
       - ANOMALY_TRAFFIC_DF
       - ANOMALY_FEATURE_COLS
-      - ANOMALY_LABEL_COL（如果能识别）
+      - ANOMALY_LABEL_COL (if detected)
     """
     global ANOMALY_TRAFFIC_DF, ANOMALY_FEATURE_COLS, ANOMALY_LABEL_COL
 
@@ -631,40 +647,38 @@ def _load_anomaly_traffic():
 
         df = pd.read_csv(csv_path)
 
-        # 1) 尝试识别 label 列（可选）
+        # 1) Try to detect a label column (optional)
         label_col = None
         for c in df.columns:
             if str(c).strip().lower() in ("label", "class", "target", "y"):
                 label_col = c
                 break
 
-        # 2) 选择特征列：优先用你模型的 FEATURE_COLUMNS（如果存在且匹配）
+        # 2) Prefer using model FEATURE_COLUMNS if available and fully present
         feature_cols = None
         try:
             if "FEATURE_COLUMNS" in globals() and FEATURE_COLUMNS:
-                # FEATURE_COLUMNS 可能是 list[str]
                 if all(col in df.columns for col in FEATURE_COLUMNS):
                     feature_cols = list(FEATURE_COLUMNS)
         except Exception:
             pass
 
-        # 3) 如果 CSV 不包含完整 FEATURE_COLUMNS，则退化为：取所有数值列（排除 label）
+        # 3) Fallback: use all numeric columns (excluding label)
         if feature_cols is None:
             tmp = df.copy()
             if label_col and label_col in tmp.columns:
                 tmp = tmp.drop(columns=[label_col])
-            # 只保留数值列
             tmp = tmp.select_dtypes(include=["number"])
             feature_cols = list(tmp.columns)
 
         if not feature_cols:
             raise ValueError("No numeric feature columns found in anomaly_traffic.csv")
 
-        # 4) 如果模型期望 78（或 FEATURE_COLUMNS 长度），这里做一致性校验
+        # 4) Enforce feature count consistency if model expects it
         expected = None
         if "FEATURE_COLUMNS" in globals() and FEATURE_COLUMNS:
             expected = len(FEATURE_COLUMNS)
-        # 没有 FEATURE_COLUMNS 就不强制，但一般你模型是 78
+
         if expected is not None and len(feature_cols) != expected:
             raise ValueError(
                 f"Feature count mismatch: csv has {len(feature_cols)} cols, "
@@ -676,17 +690,16 @@ def _load_anomaly_traffic():
         ANOMALY_LABEL_COL = label_col
 
 
-# ====== 保持你之前的“三档固定间隔 + 阈值逻辑不变”======
+# ====== Keep the same mode intervals and threshold logic ======
 MODE_INTERVAL_MS = {
-    "Low": 2000,     # 2秒一次
-    "Medium": 1000,  # 1秒一次
-    "High": 500,     # 0.5秒一次（1秒两次）
+    "Low": 2000,
+    "Medium": 1000,
+    "High": 500,
 }
 
 LEVEL_THRESHOLDS = {
-    "low_max": 5,      # 0~5 => Low
-    "medium_max": 10,  # 6~10 => Medium
-    # >=11 => High
+    "low_max": 5,
+    "medium_max": 10,
 }
 
 def count_to_level(c: int) -> str:
@@ -697,38 +710,28 @@ def count_to_level(c: int) -> str:
     return "High"
 
 
-# ====== ✅ 替换原来的 /api/stream 路由为下面这个 ======
+# ====== Replace the original /api/stream route with this one ======
 @app.route('/api/stream', methods=['GET'])
 def get_attack_stream_sample():
-    """
-    改动点：异常流量从 stream/anomaly_traffic.csv 随机抽取（每次事件随机一行）
-    其他逻辑保持：
-      - mode 三档随机（可用 ?mode= 指定）
-      - Low: 2s一次, Medium: 1s一次, High: 0.5s一次
-      - window 默认 TIME_WINDOW_SECONDS（默认10）
-      - 返回 stream[{features,label,at_ms,ts}]
-    """
+
     try:
-        # 1) 加载异常流量 CSV（只加载一次）
+        # 1) Load anomaly traffic CSV (cached)
         _load_anomaly_traffic()
 
         df = ANOMALY_TRAFFIC_DF
         feature_cols = ANOMALY_FEATURE_COLS
         label_col = ANOMALY_LABEL_COL
 
-        # 2) window 秒数：默认 TIME_WINDOW_SECONDS，没有就 10
+        # 2) Window size in seconds
         default_window = int(TIME_WINDOW_SECONDS) if "TIME_WINDOW_SECONDS" in globals() else 10
         window_s = int(request.args.get("window", default_window))
         window_ms = max(1000, window_s * 1000)
 
-        # 3) mode：不传则随机三选一
-        mode = request.args.get("mode")
-        if mode not in MODE_INTERVAL_MS:
-            mode = random.choice(list(MODE_INTERVAL_MS.keys()))
-
+        # 3) Mode: fixed HIGH (ignore any ?mode=)
+        mode = "High"
         interval = MODE_INTERVAL_MS[mode]
 
-        # 4) label 过滤（如果 CSV 有 label 列才支持）
+        # 4) Label filter (only if CSV has a label column)
         label_filter = request.args.get("label")
         df_candidates = df
         if label_filter:
@@ -744,24 +747,21 @@ def get_attack_stream_sample():
                     "message": f"No samples found for label '{label_filter}'."
                 }), 404
 
-        # 5) 按固定间隔生成 at_ms（保持原逻辑：10秒=>Low=5, Med=10, High=20）
+        # 5) Generate offsets by fixed interval (HIGH)
         offsets = list(range(0, window_ms, interval))
         attack_frequency = len(offsets)
 
-        # 6) 每个事件随机抽一行异常流量作为 features
+        # 6) Randomly sample one row per event as features
         start_ms = int(time.time() * 1000)
         stream = []
         n = len(df_candidates)
 
         for off in offsets:
-            # 随机行
             ridx = random.randrange(n)
             row = df_candidates.iloc[ridx]
 
-            # features：转成 float list，NaN 用 0.0
             feats = pd.to_numeric(row[feature_cols], errors="coerce").fillna(0.0).astype(float).tolist()
 
-            # label：优先用 CSV 自带 label；否则 fallback
             lbl = None
             if label_col:
                 lbl = row[label_col]
@@ -791,10 +791,9 @@ def get_attack_stream_sample():
         logger.error(f"/api/stream error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
-
 @app.route('/api/random', methods=['GET'])
 def get_random_data():
-    """生成随机数据"""
+    """Generate random feature data."""
     count = len(FEATURE_COLUMNS) if FEATURE_COLUMNS else 78
     data = np.random.uniform(0, 1000, count).tolist()
     names = FEATURE_COLUMNS if FEATURE_COLUMNS else [f"f_{i}" for i in range(count)]
@@ -804,7 +803,7 @@ def get_random_data():
 @app.route('/api/upload-and-retrain', methods=['POST'])
 def upload_and_retrain():
     """
-    上传 CSV 并重训练
+    Upload CSV files and retrain the model.
     """
     try:
         if 'files' not in request.files:
@@ -828,11 +827,11 @@ def upload_and_retrain():
 
         full_df = pd.concat(dfs, ignore_index=True)
 
-        # 启动训练
+        # Start training
         result = train_model_with_data(full_df)
 
         if result['success']:
-            # 重新加载模型
+            # Reload model components
             if load_model_components():
                 return jsonify({
                     "status": "success",
@@ -851,12 +850,12 @@ def upload_and_retrain():
 
 
 # ----------------------------------------------------------------------
-# 程序入口
+# Entry point
 # ----------------------------------------------------------------------
 if __name__ == '__main__':
-    # 启动时加载模型
+    # Load model at startup
     if not load_model_components():
-        logger.warning("⚠️ Warning: Model components could not be loaded at startup.")
-        logger.warning("   Please ensure 'trainning.py' has been run and generated files in './models/.")
+        logger.warning("Warning: Model components could not be loaded at startup.")
+        logger.warning("Please ensure 'trainning.py' has been run and generated files in './models/.")
 
     app.run(host='127.0.0.1', port=5050, debug=True)
