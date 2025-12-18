@@ -170,8 +170,7 @@ def predict(raw_input_data):
         data_scaled = SCALER.transform(new_df)
 
         # 5. Predict
-        # Pass NumPy array (not a DataFrame with feature names) to avoid scikit-learn warning:
-        # "X has feature names, but RandomForestClassifier was fitted without feature names"
+        # Use NumPy array (not DataFrame) to avoid feature name warnings
         prediction_encoded = MODEL.predict(data_scaled)[0]
         prediction_proba = MODEL.predict_proba(data_scaled)[0]
 
@@ -304,7 +303,7 @@ def build_attack_sample_library():
 # ----------------------------------------------------------------------
 def train_model_with_data(df, target_column='Label'):
     """
-    Retrain the model using uploaded data.
+    Retrain the model using uploaded data combined with original training dataset.
 
     Returns:
         dict {'success': True/False, 'message': str, 'stats': dict}
@@ -315,20 +314,61 @@ def train_model_with_data(df, target_column='Label'):
     try:
         logger.info("Starting retraining process...")
 
-        # 1. Basic cleanup
+        # 1. Basic cleanup for uploaded data first
         df.columns = df.columns.str.strip()  # Strip column name spaces
 
-        # Check if target column exists
+        # Check if target column exists in uploaded data
         if target_column not in df.columns:
-            error_msg = f"Target column '{target_column}' not found in CSV. Available columns: {', '.join(df.columns.tolist())}"
+            error_msg = f"Target column '{target_column}' not found in uploaded CSV. Available columns: {', '.join(df.columns.tolist())}"
             logger.error(error_msg)
             return {'success': False, 'message': error_msg, 'stats': {}}
 
-        # Handle Inf and NaN
+        # Handle Inf and NaN in uploaded data
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
-        df.dropna(inplace=True)  # Drop rows with NaN to ensure training quality
+        df.dropna(inplace=True)
 
-        # 2. Label encoding
+        # 2. Load and combine with original training dataset
+        original_dataset_path = './data/Wednesday-workingHours.pcap_ISCX.csv'
+        if os.path.exists(original_dataset_path):
+            logger.info(f"Loading original training dataset from {original_dataset_path}...")
+            try:
+                original_df = pd.read_csv(original_dataset_path)
+                original_df.columns = original_df.columns.str.strip()
+                
+                # Verify original dataset has the target column
+                if target_column not in original_df.columns:
+                    logger.warning(f"Original dataset missing '{target_column}' column. Using only uploaded data.")
+                else:
+                    # Clean original dataset
+                    original_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+                    original_df.dropna(inplace=True)
+                    
+                    logger.info(f"Original dataset loaded: {len(original_df)} samples")
+                    logger.info(f"New uploaded dataset: {len(df)} samples")
+                    
+                    # Combine datasets - ensure columns match exactly
+                    # Get common columns between both datasets
+                    common_cols = list(set(df.columns) & set(original_df.columns))
+                    
+                    # Reorder both dataframes to use only common columns in same order
+                    df = df[common_cols]
+                    original_df = original_df[common_cols]
+                    
+                    # Now combine
+                    df = pd.concat([original_df, df], ignore_index=True)
+                    logger.info(f"Combined dataset: {len(df)} total samples")
+            except Exception as e:
+                logger.warning(f"Failed to load original dataset: {e}. Using only uploaded data.")
+        else:
+            logger.warning(f"Original dataset not found at {original_dataset_path}. Using only uploaded data.")
+
+        # Verify we still have data after combining
+        if len(df) == 0:
+            error_msg = "No data remaining after cleaning. Please check your CSV file."
+            logger.error(error_msg)
+            return {'success': False, 'message': error_msg, 'stats': {}}
+
+        # 3. Label encoding
         le = LabelEncoder()
         df[target_column] = le.fit_transform(df[target_column].astype(str))
 
@@ -346,7 +386,7 @@ def train_model_with_data(df, target_column='Label'):
         }
         logger.info(f"Data statistics: {stats}")
 
-        # 3 Split features and labels
+        # 4. Split features and labels
         X = df.drop(columns=[target_column])
         y = df[target_column]
 
@@ -366,25 +406,21 @@ def train_model_with_data(df, target_column='Label'):
         else:
             feature_columns_list = X.columns.tolist()
 
-        # 4. Train-test split
+        # 5. Train-test split
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=0.2, random_state=42, stratify=y
         )
 
-        # 5. Standardization
+        # 6. Standardization
         scaler = StandardScaler()
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
 
-        # Convert back to DataFrame to keep consistent column order
-        X_train_scaled = pd.DataFrame(X_train_scaled, columns=feature_columns_list)
-        X_test_scaled = pd.DataFrame(X_test_scaled, columns=feature_columns_list)
-
-        # 6. Train Random Forest
+        # 7. Train Random Forest (use numpy arrays to avoid feature name warnings)
         rf_model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
         rf_model.fit(X_train_scaled, y_train)
 
-        # 7. Evaluation
+        # 8. Evaluation
         y_pred = rf_model.predict(X_test_scaled)
 
         # ====== AUC calculation (fix binary-case indexing issue) ======
@@ -438,7 +474,7 @@ def train_model_with_data(df, target_column='Label'):
             "auc": auc_weighted
         }
 
-        # 8. Save all components (overwrite old files)
+        # 9. Save all components (overwrite old files)
         os.makedirs('./models', exist_ok=True)
         joblib.dump(rf_model, MODEL_PATH)
         joblib.dump(scaler, SCALER_PATH)
