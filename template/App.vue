@@ -66,7 +66,7 @@ const addLog = (res: PredictionResult) => {
     timestamp: new Date().toLocaleTimeString(),
     message: `DETECTED: `,
     label: res.predicted_label,
-    confidence: `(Conf: ${(res.confidence * 100).toFixed(1)}%)`,
+    confidence: `(Conf: ${(res.confidence * 100).toFixed(4)}%)`,
     type: res.threat_level === 'None' ? 'success' : 'danger',
     threat_level: res.threat_level,
     probabilities: res.probabilities
@@ -339,7 +339,7 @@ onMounted(() => {
               <div v-if="predictionResult" class="mt-2 text-sm text-gray-600 space-y-1">
                 <div>
                   <span class="font-semibold">Confidence:</span>
-                  <span class="font-mono">{{ (predictionResult.confidence * 100).toFixed(2) }}%</span>
+                  <span class="font-mono">{{ (predictionResult.confidence * 100).toFixed(4) }}%</span>
                 </div>
                 <div v-if="predictionResult.timestamp">
                   <span class="font-semibold">Detected at:</span>
@@ -379,7 +379,7 @@ onMounted(() => {
                     :style="{ width: `${prob * 100}%` }"
                   ></div>
                 </div>
-                <span class="text-xs font-mono w-14 text-right">{{ (prob * 100).toFixed(1) }}%</span>
+                <span class="text-xs font-mono w-14 text-right">{{ (prob * 100).toFixed(4) }}%</span>
               </div>
             </div>
           </div>
@@ -412,7 +412,7 @@ onMounted(() => {
                   <div class="flex-1 bg-gray-200 rounded-full h-2 max-w-[150px]">
                     <div class="bg-current h-2 rounded-full transition-all" :style="{ width: `${prob * 100}%` }"></div>
                   </div>
-                  <span class="w-12 text-right">{{ (prob * 100).toFixed(1) }}%</span>
+                  <span class="w-12 text-right">{{ (prob * 100).toFixed(4) }}%</span>
                 </div>
               </div>
             </div>

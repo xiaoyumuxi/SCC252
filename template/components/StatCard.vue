@@ -11,7 +11,7 @@ const props = defineProps<{
 const displayValue = computed(() => {
   if (props.isLoading) return 'Loading...';
   if (props.value === undefined) return 'Offline';
-  return (props.value * 100).toFixed(1) + '%';
+  return (props.value * 100).toFixed(4) + '%';
 });
 </script>
 
